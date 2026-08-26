@@ -1,0 +1,16 @@
+README.md
+pyproject.toml
+src/machine_feira/__init__.py
+src/machine_feira/automation.py
+src/machine_feira/hand_gestures.py
+src/machine_feira/main.py
+src/machine_feira/models.py
+src/machine_feira/types.py
+src/machine_feira.egg-info/PKG-INFO
+src/machine_feira.egg-info/SOURCES.txt
+src/machine_feira.egg-info/dependency_links.txt
+src/machine_feira.egg-info/entry_points.txt
+src/machine_feira.egg-info/requires.txt
+src/machine_feira.egg-info/top_level.txt
+tests/test_automation.py
+tests/test_hand_gestures.py

@@ -1,0 +1,2 @@
+[console_scripts]
+machine-feira = machine_feira.main:main

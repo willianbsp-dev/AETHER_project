@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: machine-feira
+Version: 0.1.0
+Summary: Controle de computador por gestos aéreos
+Requires-Python: >=3.11
+Requires-Dist: mediapipe<0.11,>=0.10.14
+Requires-Dist: pyautogui>=0.9.54
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
