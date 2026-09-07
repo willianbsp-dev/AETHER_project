@@ -1,4 +1,4 @@
-# Machine Feira
+# Feira tecnológia - Projeto AETHER
 
 Sistema de controle de computador por gestos aéreos em tempo real, utilizando webcam, MediaPipe Tasks, PyAutoGUI e integração nativa com o compositor **Hyprland** (Wayland / Arch Linux).
 
