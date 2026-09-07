@@ -1,6 +1,6 @@
 # Feira Tecnológica - Projeto AETHER
 
-Sistema de controle de computador por gestos aéreos em tempo real, utilizando webcam, MediaPipe Tasks, PyAutoGUI e integração nativa com o compositor **Hyprland** (Wayland / Arch Linux), integrado à aplicação Mobile desenvolvida com Flutter e inteligência artificial.
+Sistema de controle de computador por gestos aéreos em tempo real, utilizando webcam, MediaPipe Tasks, PyAutoGUI, integrado à aplicação Mobile desenvolvida com Flutter e inteligência artificial.
 
 ---
 
