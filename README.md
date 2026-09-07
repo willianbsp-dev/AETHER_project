@@ -12,7 +12,7 @@ Sistema de controle de computador por gestos aéreos em tempo real, utilizando w
 - Aluno 1 (Ana Carolina Lopes Reis / 25096)
 - Aluno 2 ()
 - Aluno 3 (Maria Rita Barbosa Lima Albuquerque dos Santos / 25021)
-- Aluno 4 ()
+- Aluno 4 (Mayara Teles / 25122)
 - Aluno 5 (Willian Bernardo Soares Pereira / 25018)
 
 ---
