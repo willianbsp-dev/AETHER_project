@@ -1,6 +1,35 @@
-# Feira tecnológia - Projeto AETHER
+# Feira Tecnológica - Projeto AETHER
 
-Sistema de controle de computador por gestos aéreos em tempo real, utilizando webcam, MediaPipe Tasks, PyAutoGUI e integração nativa com o compositor **Hyprland** (Wayland / Arch Linux).
+Sistema de controle de computador por gestos aéreos em tempo real, utilizando webcam, MediaPipe Tasks, PyAutoGUI e integração nativa com o compositor **Hyprland** (Wayland / Arch Linux), integrado à aplicação Mobile desenvolvida com Flutter e inteligência artificial.
+
+---
+
+## 👥 Integrantes e Informações Acadêmicas
+
+**Disciplina:** Desenvolvimento Mobile / Inteligência Artificial  
+**Professora:** Joelma Sartori  
+**Integrantes da Dupla/Grupo:**
+- Aluno 1 (Ana Carolina Lopes Reis / 25096)
+- Aluno 2 ()
+- Aluno 3 (Maria Rita Barbosa Lima Albuquerque dos Santos / 25021)
+- Aluno 4 ()
+- Aluno 5 (Willian Bernardo Soares Pereira / 25018)
+
+---
+
+## 🎪 Proposta para a Feira Tecnológica / de Ciências
+
+**Tema / Nome do Projeto:**  
+<!-- Exemplo: Identificador de Expressões e Humor com IA Mobile -->
+
+**Problema que busca resolver / Proposta de Valor:**  
+<!-- Qual necessidade ou ideia o projeto atende? -->
+
+**Público-Alvo:**  
+<!-- A quem se destina a solução? -->
+
+**Como será a demonstração prática na feira:**  
+<!-- Descreva como os visitantes irão interagir com o app no estande -->
 
 ---
 
@@ -30,6 +59,15 @@ Sistema de controle de computador por gestos aéreos em tempo real, utilizando w
 | **Clicar (Links/Botões)** | Apontar com o indicador e segurar a mão parada por 0,5s (*Dwell Time*). | Clique do mouse com gauge visual de progresso |
 | **Ativar Voz/Digitação** | Fazer o sinal de joinha 👍 (polegar para cima e outros dedos fechados). | Dispara gancho / atalho de ditado por voz |
 | **Confirmar / Enviar** | Fazer o sinal de OK 👌 (polegar e indicador unidos, outros 3 estendidos). | `Enter` |
+
+---
+
+## 🛠️ Tecnologias Utilizadas
+
+- [Flutter](https://flutter.dev/)
+- [Google Teachable Machine](https://teachablemachine.withgoogle.com/)
+- [TensorFlow Lite](https://www.tensorflow.org/lite)
+- [Git & GitHub](https://github.com/)
 
 ---
 
@@ -81,3 +119,12 @@ pytest
 - `src/machine_feira/hyprland.py`: Módulo de integração e despacho de comandos `hyprctl` para o compositor Hyprland.
 - `src/machine_feira/automation.py`: Ponte de automação do desktop com PyAutoGUI e Hyprland.
 - `src/machine_feira/main.py`: Loop principal de captura da webcam, detecção com MediaPipe Tasks e HUD visual.
+
+---
+
+## 📋 Histórico de Commits e Atualizações
+
+- `[25/08/2026]` - Criação do repositório e estrutura inicial.
+- `[06/09/2026]` - Resumo da pesquisa sobre Machine Learning e Teachable Machine.
+- `[06/09/2026]` - Adição da proposta e tema para a Feira Tecnológica.
+- `[Data]` - Finalização do README e envio para avaliação.
