@@ -127,4 +127,4 @@ pytest
 - `[25/08/2026]` - Criação do repositório e estrutura inicial.
 - `[06/09/2026]` - Resumo da pesquisa sobre Machine Learning e Teachable Machine.
 - `[06/09/2026]` - Adição da proposta e tema para a Feira Tecnológica.
-- `[Data]` - Finalização do README e envio para avaliação.
+- `[07/09/2026]` - Finalização do README e envio para avaliação.
