@@ -10,7 +10,7 @@ Sistema de controle de computador por gestos aéreos em tempo real, utilizando w
 **Professora:** Joelma Sartori  
 **Integrantes da Dupla/Grupo:**
 - Aluno 1 (Ana Carolina Lopes Reis / 25096)
-- Aluno 2 ()
+- Aluno 2 (Julia Cavalcante Leão / 25230)
 - Aluno 3 (Maria Rita Barbosa Lima Albuquerque dos Santos / 25021)
 - Aluno 4 (Mayara Teles / 25122)
 - Aluno 5 (Willian Bernardo Soares Pereira / 25018)
@@ -19,16 +19,16 @@ Sistema de controle de computador por gestos aéreos em tempo real, utilizando w
 
 ## 🎪 Proposta para a Feira Tecnológica / de Ciências
 
-**Tema / Nome do Projeto:**  
+**Tema / Nome do Projeto:**  Gerenciamento de janelas com movimentos das mãos para facilitar o uso de computadores para pessoas com deficiências / AETHER((Adaptativo Environment for Tracking, Help, Execution, and Recognition) 
 <!-- Exemplo: Identificador de Expressões e Humor com IA Mobile -->
 
-**Problema que busca resolver / Proposta de Valor:**  
+**Problema que busca resolver / Proposta de Valor:**  O projeto busca facilitar o uso de computadores para pessoas com deficiências motores, que dificultam o uso do teclado e mouse do computador, sendo assim foi desenvolvido um método onde o usuário utiliza as mãos para movimentar as janelas.
 <!-- Qual necessidade ou ideia o projeto atende? -->
 
-**Público-Alvo:**  
+**Público-Alvo:** Pessoas com dificuldades motoras. 
 <!-- A quem se destina a solução? -->
 
-**Como será a demonstração prática na feira:**  
+**Como será a demonstração prática na feira:**  A demonstração será feita com os computadores através da câmera onde o avaliador usará a câmera para testar os movimentos possíveis e conseguir visualizar como o projeto funciona.
 <!-- Descreva como os visitantes irão interagir com o app no estande -->
 
 ---
