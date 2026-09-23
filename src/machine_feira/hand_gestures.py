@@ -103,10 +103,12 @@ class HandGestureRecognizer:
         self._two_hand_history: Deque[_TimedVal] = deque(maxlen=30)
         self._last_two_hand_seen = 0.0
 
-        # Debounce para gestos estáticos (OK e Joinha)
+        # Debounce e controle de gestos discretos e swipes
         self._ok_counter = 0
         self._thumbs_up_counter = 0
         self._last_discrete_action = 0.0
+        self._last_swipe_time = 0.0
+        self._last_swipe_gesture: Gesture | None = None
 
     def update(
         self,
@@ -128,7 +130,8 @@ class HandGestureRecognizer:
             hands_list = list(hands)
 
         # 1. GESTOS DE DUAS MÃOS (Maximizar / Restaurar)
-        if len(hands_list) >= 2:
+        has_multiple_hands = len(hands_list) >= 2
+        if has_multiple_hands:
             self._last_two_hand_seen = timestamp
             two_hand_event = self._check_two_hand_gestures(hands_list[0], hands_list[1], timestamp)
             if two_hand_event:
@@ -141,7 +144,7 @@ class HandGestureRecognizer:
 
         # 2. GESTOS DE UMA MÃO (Mão primária)
         primary_hand = hands_list[0]
-        return self._process_single_hand(primary_hand, timestamp)
+        return self._process_single_hand(primary_hand, timestamp, has_multiple_hands=has_multiple_hands)
 
     def _check_two_hand_gestures(
         self, hand1: Sequence[object], hand2: Sequence[object], now: float
@@ -175,7 +178,9 @@ class HandGestureRecognizer:
 
         return None
 
-    def _process_single_hand(self, landmarks: Sequence[object], now: float) -> GestureEvent:
+    def _process_single_hand(
+        self, landmarks: Sequence[object], now: float, has_multiple_hands: bool = False
+    ) -> GestureEvent:
         wrist = self._point(landmarks[WRIST])
         raw_index = self._point(landmarks[INDEX_TIP])
         raw_thumb = self._point(landmarks[THUMB_TIP])
@@ -221,14 +226,20 @@ class HandGestureRecognizer:
             self._ok_counter = 0
 
         # 3. Gesto: PALMA ABERTA (Minimizar / Trocar Área de Trabalho por Swipe)
-        is_open_palm = index_ext and middle_ext and ring_ext and pinky_ext
+        open_fingers = sum([index_ext, middle_ext, ring_ext, pinky_ext])
+        is_open_palm = open_fingers >= 3
         if is_open_palm:
-            palm_event = self._check_open_palm_swipe(wrist, now)
-            if palm_event:
-                self._reset_dwell()
-                self._circle_tracker.clear()
-                self._is_pinching = False
-                return palm_event
+            # Só avalia swipes de palma se NÃO houver duas mãos na tela (evita conflito com maximizar/restaurar)
+            if not has_multiple_hands:
+                palm_event = self._check_open_palm_swipe(wrist, now)
+                if palm_event:
+                    self._reset_dwell()
+                    self._circle_tracker.clear()
+                    self._is_pinching = False
+                    return palm_event
+        else:
+            if self._palm_history and (now - self._palm_history[-1].time > 0.10):
+                self._palm_history.clear()
 
         # 4. Gesto: ZOOM IN / ZOOM OUT (Variação da pinça com outros dedos fechados)
         if not middle_ext and not ring_ext and not pinky_ext and pinch_dist <= self.config.max_zoom_interaction_dist:
@@ -325,33 +336,54 @@ class HandGestureRecognizer:
 
     def _check_open_palm_swipe(self, wrist: Point, now: float) -> GestureEvent | None:
         """Identifica varreduras direcionais rápidas com a palma aberta."""
+        # Se acabou de disparar um swipe, ignora os 120ms seguintes para não capturar a finalização do movimento
+        if now - self._last_swipe_time < 0.12:
+            return None
+
         while self._palm_history and (now - self._palm_history[0].time > self.config.swipe_window_seconds):
             self._palm_history.popleft()
 
         self._palm_history.append(_TimedPoint(wrist, now))
 
-        if len(self._palm_history) >= 4 and self._can_fire(now):
+        if len(self._palm_history) >= 3:
             start_p = self._palm_history[0].p
             dx = wrist.x - start_p.x
             dy = wrist.y - start_p.y
+            abs_dx = abs(dx)
+            abs_dy = abs(dy)
 
-            # Empurrar para baixo -> MINIMIZE
-            if dy >= self.config.swipe_threshold and dy > abs(dx) * 1.25:
-                self._last_discrete_action = now
-                self._palm_history.clear()
-                return GestureEvent(Gesture.MINIMIZE, wrist)
+            # 1. Empurrar para baixo -> MINIMIZE
+            if dy >= self.config.swipe_threshold and dy > abs_dx * 1.25:
+                if now - self._last_discrete_action >= self.config.cooldown_seconds:
+                    self._last_discrete_action = now
+                    self._last_swipe_time = now
+                    self._last_swipe_gesture = Gesture.MINIMIZE
+                    self._palm_history.clear()
+                    return GestureEvent(Gesture.MINIMIZE, wrist)
 
-            # Varrer para esquerda -> SWIPE_LEFT
-            if dx <= -self.config.swipe_threshold and abs(dx) > abs(dy) * 1.25:
-                self._last_discrete_action = now
-                self._palm_history.clear()
-                return GestureEvent(Gesture.SWIPE_LEFT, wrist)
+            # 2. Varrer para a esquerda -> SWIPE_LEFT
+            if dx <= -self.config.swipe_threshold and abs_dx > abs_dy * 1.20:
+                # Se for repetindo na mesma direção (SWIPE_LEFT), cooldown rápido de 0.20s
+                # Se for direção oposta, cooldown de 0.40s para ignorar o retorno da mão
+                min_cooldown = 0.20 if self._last_swipe_gesture == Gesture.SWIPE_LEFT else 0.40
+                if now - self._last_swipe_time >= min_cooldown:
+                    self._last_discrete_action = now
+                    self._last_swipe_time = now
+                    self._last_swipe_gesture = Gesture.SWIPE_LEFT
+                    self._palm_history.clear()
+                    return GestureEvent(Gesture.SWIPE_LEFT, wrist)
 
-            # Varrer para direita -> SWIPE_RIGHT
-            if dx >= self.config.swipe_threshold and abs(dx) > abs(dy) * 1.25:
-                self._last_discrete_action = now
-                self._palm_history.clear()
-                return GestureEvent(Gesture.SWIPE_RIGHT, wrist)
+            # 3. Varrer para a direita -> SWIPE_RIGHT
+            if dx >= self.config.swipe_threshold and abs_dx > abs_dy * 1.20:
+                # Se for repetindo na mesma direção (SWIPE_RIGHT), cooldown rápido de 0.20s
+                # Se for direção oposta, cooldown de 0.40s para ignorar o retorno da mão
+                min_cooldown = 0.20 if self._last_swipe_gesture == Gesture.SWIPE_RIGHT else 0.40
+                if now - self._last_swipe_time >= min_cooldown:
+                    self._last_discrete_action = now
+                    self._last_swipe_time = now
+                    self._last_swipe_gesture = Gesture.SWIPE_RIGHT
+                    self._palm_history.clear()
+                    return GestureEvent(Gesture.SWIPE_RIGHT, wrist)
 
         return None
 
@@ -463,6 +495,8 @@ class HandGestureRecognizer:
         self._circle_tracker.clear()
         self._ok_counter = 0
         self._thumbs_up_counter = 0
+        self._last_swipe_time = 0.0
+        self._last_swipe_gesture = None
 
     def _can_fire(self, now: float) -> bool:
         return now - self._last_discrete_action >= self.config.cooldown_seconds

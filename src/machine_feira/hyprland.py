@@ -55,14 +55,17 @@ class HyprlandDispatcher:
         if active and active.get("fullscreen", 0) == 1:
             return True  # Já está maximizada com waybar visível
 
+        """Maximiza a janela respeitando Waybar (toggle: se já estiver maximizada, restaura)."""
         return self.dispatch_lua_or_legacy(
             "hl.dsp.window.fullscreen_state({ internal = 1, client = 0 })",
+            "hl.dsp.window.fullscreen_state({ internal = 1, client = 0, action = 'toggle' })",
             "fullscreen",
             "1",
         )
 
     def restore(self) -> bool:
         """Restaura a janela ativa para o tamanho normal de volta do modo maximizado."""
+        """Restaura a janela do modo maximizado (mesmo comando de toggle que o maximize)."""
         active = self.get_active_window()
         if active is None or active.get("fullscreen", 0) != 0:
             # Sai do modo maximizado/fullscreen
@@ -73,33 +76,39 @@ class HyprlandDispatcher:
             )
 
         # Se não estiver em fullscreen, alterna estado flutuante
+        if active is not None and active.get("fullscreen", 0) == 0:
+            # Janela já está normal — não faz nada
+            return True
         return self.dispatch_lua_or_legacy(
             "hl.dsp.window.float({ action = 'toggle' })",
             "togglefloating",
+            "hl.dsp.window.fullscreen_state({ internal = 1, client = 0, action = 'toggle' })",
+            "fullscreen",
+            "0",
         )
 
     def minimize(self) -> bool:
-        """Move a janela para o workspace especial (scratchpad)."""
+        """Move a janela para o workspace oculto 'minimized' (restaurável via Super+H)."""
         return self.dispatch_lua_or_legacy(
-            "hl.dsp.window.move({ workspace = 'special:magic' })",
+            "hl.dsp.window.move({ workspace = 'special:minimized' })",
             "movetoworkspacesilent",
             "special:minimized",
         )
 
     def workspace_next(self) -> bool:
-        """Avança para o próximo workspace."""
+        """Avança para o próximo workspace (cria um novo caso não exista)."""
         return self.dispatch_lua_or_legacy(
-            "hl.dsp.focus({ workspace = 'e+1' })",
+            "hl.dsp.focus({ workspace = 'r+1' })",
             "workspace",
-            "e+1",
+            "+1",
         )
 
     def workspace_prev(self) -> bool:
         """Retorna para o workspace anterior."""
         return self.dispatch_lua_or_legacy(
-            "hl.dsp.focus({ workspace = 'e-1' })",
+            "hl.dsp.focus({ workspace = 'r-1' })",
             "workspace",
-            "e-1",
+            "-1",
         )
 
     def get_active_window(self) -> dict | None:

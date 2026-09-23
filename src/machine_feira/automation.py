@@ -83,7 +83,7 @@ class DesktopAutomation:
                 self._pyautogui.hotkey("super", "f")
         elif event.gesture is Gesture.MINIMIZE:
             if not self.hyprland.minimize():
-                self._pyautogui.hotkey("super", "d")
+                self._pyautogui.hotkey("super", "shift", "m")
         elif event.gesture is Gesture.SWIPE_LEFT:
             if not self.hyprland.workspace_prev():
                 self._pyautogui.hotkey("super", "shift", "left")

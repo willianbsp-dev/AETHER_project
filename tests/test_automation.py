@@ -45,15 +45,28 @@ class _FakeHyprland(HyprlandDispatcher):
     def __init__(self, available: bool = True) -> None:
         super().__init__()
         self._available_flag = available
+        self.active_window: dict | None = {"fullscreen": 0, "title": "Test Window"}
         self.dispatched: list[str] = []
 
     def is_available(self) -> bool:
         return self._available_flag
 
+    def get_active_window(self) -> dict | None:
+        if not self._available_flag:
+            return None
+        return self.active_window
+
     def dispatch_raw(self, *args: str) -> bool:
         if not self._available_flag:
             return False
-        self.dispatched.append(" ".join(args).strip())
+        cmd_str = " ".join(args).strip()
+        self.dispatched.append(cmd_str)
+        if "internal = 1" in cmd_str or "fullscreen 1" in cmd_str:
+            if self.active_window:
+                self.active_window["fullscreen"] = 1
+        elif "internal = 0" in cmd_str or "fullscreen 0" in cmd_str:
+            if self.active_window:
+                self.active_window["fullscreen"] = 0
         return True
 
     def ensure_camera_unfocused(self, camera_title_keyword: str = "Machine Feira") -> None:
@@ -136,12 +149,13 @@ def test_hyprland_window_and_workspace_actions() -> None:
 
     automation.handle(GestureEvent(Gesture.MINIMIZE, Point(0.5, 0.5)))
     assert "hl.dsp.window.move({ workspace = 'special:magic' })" in fake_hypr.dispatched
+    assert "hl.dsp.window.move({ workspace = 'special:minimized' })" in fake_hypr.dispatched
 
     automation.handle(GestureEvent(Gesture.SWIPE_LEFT, Point(0.5, 0.5)))
-    assert "hl.dsp.focus({ workspace = 'e-1' })" in fake_hypr.dispatched
+    assert "hl.dsp.focus({ workspace = 'r-1' })" in fake_hypr.dispatched
 
     automation.handle(GestureEvent(Gesture.SWIPE_RIGHT, Point(0.5, 0.5)))
-    assert "hl.dsp.focus({ workspace = 'e+1' })" in fake_hypr.dispatched
+    assert "hl.dsp.focus({ workspace = 'r+1' })" in fake_hypr.dispatched
 
 
 def test_hyprland_fallback_when_unavailable() -> None:
@@ -151,7 +165,8 @@ def test_hyprland_fallback_when_unavailable() -> None:
     assert ("super", "f") in fake_gui.hotkeys
 
     automation.handle(GestureEvent(Gesture.MINIMIZE, Point(0.5, 0.5)))
-    assert ("super", "d") in fake_gui.hotkeys
+    assert ("super", "shift", "s") in fake_gui.hotkeys
+    assert ("super", "shift", "m") in fake_gui.hotkeys
 
     automation.handle(GestureEvent(Gesture.SWIPE_LEFT, Point(0.5, 0.5)))
     assert ("super", "shift", "left") in fake_gui.hotkeys

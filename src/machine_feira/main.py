@@ -72,6 +72,13 @@ def main() -> None:
         min_tracking_confidence=0.60,
     )
 
+    window_name = "Machine Feira - Controle por Gestos"
+    cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
+    try:
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+    except Exception:
+        pass
+
     try:
         with mp.tasks.vision.HandLandmarker.create_from_options(options) as detector:
             while True:

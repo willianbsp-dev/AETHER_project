@@ -217,6 +217,38 @@ def test_detects_open_palm_swipe_left_and_right() -> None:
     assert detected_right
 
 
+def test_detects_multiple_consecutive_swipes_with_same_hand() -> None:
+    recognizer = HandGestureRecognizer()
+    base_hand = create_hand(
+        wrist=(0.4, 0.5),
+        thumb=(0.2, 0.3),
+        index=(0.35, 0.2),
+        middle=(0.4, 0.18),
+        ring=(0.45, 0.2),
+        pinky=(0.5, 0.25),
+    )
+
+    # 1º Swipe para a direita
+    first_detected = False
+    for i in range(5):
+        hand = offset_hand(base_hand, dx=i * 0.035, dy=0.0)
+        ev = recognizer.update(hand, now=1.0 + i * 0.05)
+        if ev.gesture is Gesture.SWIPE_RIGHT:
+            first_detected = True
+            break
+    assert first_detected
+
+    # 2º Swipe para a direita com a mesma mão após 0.3s
+    second_detected = False
+    for i in range(5):
+        hand = offset_hand(base_hand, dx=i * 0.035, dy=0.0)
+        ev = recognizer.update(hand, now=1.5 + i * 0.05)
+        if ev.gesture is Gesture.SWIPE_RIGHT:
+            second_detected = True
+            break
+    assert second_detected
+
+
 def test_detects_two_hands_maximize_and_restore() -> None:
     recognizer = HandGestureRecognizer()
 
