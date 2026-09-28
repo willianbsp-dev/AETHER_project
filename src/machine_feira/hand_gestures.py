@@ -45,20 +45,26 @@ class GestureConfig:
     zoom_step_distance: float = 0.035
     max_zoom_interaction_dist: float = 0.28
     # Dwell Click (raio estável e tempo)
-    stable_distance: float = 0.030
-    dwell_seconds: float = 0.50
+    stable_distance: float = 0.038
+    dwell_seconds: float = 0.45
     # Scroll (acumulador e limiar)
-    scroll_threshold: float = 0.022
+    scroll_threshold: float = 0.018
     # Swipes de palma aberta
-    swipe_threshold: float = 0.070
+    swipe_threshold: float = 0.065
     swipe_window_seconds: float = 0.35
+    swipe_same_cooldown_seconds: float = 0.40
+    swipe_opposite_lockout_seconds: float = 1.10  # Bloqueia o retorno involuntário da mão
+    # Cooldowns específicos para Minimização e Gaveta (Toggle)
+    toggle_minimized_cooldown_seconds: float = 1.30  # Delay seguro para o toggle não ficar oscilando
+    minimize_cooldown_seconds: float = 1.00
+    vertical_opposite_lockout_seconds: float = 1.20  # Bloqueia o retorno vertical involuntário
     # Gestos de duas mãos (abertura e fechamento)
-    two_hand_spread_threshold: float = 0.080
+    two_hand_spread_threshold: float = 0.075
     two_hand_window_seconds: float = 0.45
     # Cooldown para ações discretas
     cooldown_seconds: float = 0.35
     # Configuração de círculos
-    circle_config: CircleConfig = CircleConfig()
+    circle_config: CircleConfig = CircleConfig(min_points=8, min_accumulated_angle=3.2)
 
 
 @dataclass
@@ -103,12 +109,16 @@ class HandGestureRecognizer:
         self._two_hand_history: Deque[_TimedVal] = deque(maxlen=30)
         self._last_two_hand_seen = 0.0
 
-        # Debounce e controle de gestos discretos e swipes
+        # Debounce e controle de gestos discretos e swipes com anti-recoil
         self._ok_counter = 0
         self._thumbs_up_counter = 0
         self._last_discrete_action = 0.0
         self._last_swipe_time = 0.0
         self._last_swipe_gesture: Gesture | None = None
+        self._swipe_opposite_lockout_until = 0.0
+        self._last_toggle_minimized_time = 0.0
+        self._last_minimize_time = 0.0
+        self._vertical_opposite_lockout_until = 0.0
 
     def update(
         self,
@@ -137,14 +147,61 @@ class HandGestureRecognizer:
             if two_hand_event:
                 return two_hand_event
         else:
-            # Mantém histórico por pequena tolerância (250ms) caso 1 mão suma brevemente
             if timestamp - self._last_two_hand_seen > 0.25:
                 self._two_hand_history.clear()
                 self._two_hand_filter.reset()
 
-        # 2. GESTOS DE UMA MÃO (Mão primária)
-        primary_hand = hands_list[0]
+        # 2. SELEÇÃO DA MÃO ATIVA (Mão esquerda ou direita com base no score de intenção)
+        if has_multiple_hands:
+            score_0 = self._hand_activity_score(hands_list[0])
+            score_1 = self._hand_activity_score(hands_list[1])
+            if score_1 > score_0:
+                primary_hand = hands_list[1]
+            elif score_0 > score_1:
+                primary_hand = hands_list[0]
+            else:
+                if self._previous_filtered_index is not None:
+                    dist_0 = self._distance(self._point(hands_list[0][INDEX_TIP]), self._previous_filtered_index)
+                    dist_1 = self._distance(self._point(hands_list[1][INDEX_TIP]), self._previous_filtered_index)
+                    primary_hand = hands_list[0] if dist_0 <= dist_1 else hands_list[1]
+                else:
+                    primary_hand = hands_list[0]
+        else:
+            primary_hand = hands_list[0]
+
         return self._process_single_hand(primary_hand, timestamp, has_multiple_hands=has_multiple_hands)
+
+    def _hand_activity_score(self, landmarks: Sequence[object]) -> float:
+        """Determina o nível de atividade/intenção de uma mão para desempate."""
+        raw_index = self._point(landmarks[INDEX_TIP])
+        raw_thumb = self._point(landmarks[THUMB_TIP])
+        pinch_dist = self._distance(raw_index, raw_thumb)
+
+        index_ext = self._is_finger_extended(landmarks, INDEX_TIP, INDEX_PIP, INDEX_MCP)
+        middle_ext = self._is_finger_extended(landmarks, MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP)
+        ring_ext = self._is_finger_extended(landmarks, RING_TIP, RING_PIP, RING_MCP)
+        pinky_ext = self._is_finger_extended(landmarks, PINKY_TIP, PINKY_PIP, PINKY_MCP)
+
+        # 1. Joinha 👍 ou Confirmação 👌 (máxima prioridade)
+        if self._is_thumbs_up(landmarks, index_ext, middle_ext, ring_ext, pinky_ext):
+            return 100.0
+        if self._is_ok_sign(landmarks, pinch_dist, middle_ext, ring_ext, pinky_ext):
+            return 95.0
+
+        # 2. Pinça ativa (Arrastar / Zoom)
+        if pinch_dist <= self.config.pinch_distance_start * 1.15:
+            return 90.0
+
+        # 3. Indicador estendido isolado (Mira, clique, scroll, círculos)
+        if index_ext and not middle_ext and not ring_ext and not pinky_ext:
+            return 80.0
+
+        # 4. Palma aberta (Minimizar / Gaveta / Swipes)
+        open_fingers = sum([index_ext, middle_ext, ring_ext, pinky_ext])
+        if open_fingers >= 3:
+            return 70.0
+
+        return 10.0
 
     def _check_two_hand_gestures(
         self, hand1: Sequence[object], hand2: Sequence[object], now: float
@@ -155,7 +212,6 @@ class HandGestureRecognizer:
         dist = self._two_hand_filter.filter(raw_dist, now)
         mid_point = Point((p1.x + p2.x) / 2, (p1.y + p2.y) / 2)
 
-        # Limpa pontos fora da janela
         while self._two_hand_history and (now - self._two_hand_history[0].time > self.config.two_hand_window_seconds):
             self._two_hand_history.popleft()
 
@@ -184,6 +240,12 @@ class HandGestureRecognizer:
         wrist = self._point(landmarks[WRIST])
         raw_index = self._point(landmarks[INDEX_TIP])
         raw_thumb = self._point(landmarks[THUMB_TIP])
+
+        # Se houver troca brusca de posição (ex: troca de mão ativa), reseta o filtro para evitar arrasto
+        if self._previous_filtered_index is not None:
+            if self._distance(raw_index, self._previous_filtered_index) > 0.30:
+                self._cursor_filter.reset()
+                self._reset_dwell()
 
         # Suaviza o cursor para eliminar tremores de mira
         index = self._cursor_filter.filter(raw_index, now)
@@ -225,11 +287,10 @@ class HandGestureRecognizer:
         else:
             self._ok_counter = 0
 
-        # 3. Gesto: PALMA ABERTA (Minimizar / Trocar Área de Trabalho por Swipe)
+        # 3. Gesto: PALMA ABERTA (Minimizar / Abrir Gaveta / Trocar Workspace por Swipe)
         open_fingers = sum([index_ext, middle_ext, ring_ext, pinky_ext])
         is_open_palm = open_fingers >= 3
         if is_open_palm:
-            # Só avalia swipes de palma se NÃO houver duas mãos na tela (evita conflito com maximizar/restaurar)
             if not has_multiple_hands:
                 palm_event = self._check_open_palm_swipe(wrist, now)
                 if palm_event:
@@ -316,7 +377,7 @@ class HandGestureRecognizer:
         wrist = self._point(landmarks[WRIST])
 
         is_up = thumb_tip.y < thumb_mcp.y - 0.02 and thumb_tip.y < index_mcp.y
-        is_extended = self._distance(thumb_tip, wrist) > self._distance(thumb_mcp, wrist) * 1.10
+        is_extended = self._distance(thumb_tip, wrist) > self._distance(thumb_mcp, wrist) * 1.08
         return is_up and is_extended
 
     def _is_ok_sign(
@@ -327,19 +388,15 @@ class HandGestureRecognizer:
         ring_ext: bool,
         pinky_ext: bool,
     ) -> bool:
-        """Sinal de OK 👌: polegar e indicador juntos, pelo menos 2 dedos estendidos."""
-        if pinch_dist > self.config.pinch_distance_start * 1.15:
+        """Sinal de OK 👌: polegar e indicador unidos, pelo menos 2 dedos estendidos."""
+        if pinch_dist > self.config.pinch_distance_start * 1.20:
             return False
-        # Permite se ao menos 2 dos 3 outros dedos estiverem estendidos (tolerância prática)
         extended_count = sum([middle_ext, ring_ext, pinky_ext])
         return extended_count >= 2
 
     def _check_open_palm_swipe(self, wrist: Point, now: float) -> GestureEvent | None:
-        """Identifica varreduras direcionais rápidas com a palma aberta."""
-        # Se acabou de disparar um swipe, ignora os 120ms seguintes para não capturar a finalização do movimento
-        if now - self._last_swipe_time < 0.12:
-            return None
-
+        """Identifica varreduras direcionais rápidas com bloqueio anti-recoil do retorno da mão."""
+        # Se estiver em período de lockout para a direção oposta, limpa histórico e descarta
         while self._palm_history and (now - self._palm_history[0].time > self.config.swipe_window_seconds):
             self._palm_history.popleft()
 
@@ -353,35 +410,62 @@ class HandGestureRecognizer:
             abs_dy = abs(dy)
 
             # 1. Empurrar para baixo -> MINIMIZE
-            if dy >= self.config.swipe_threshold and dy > abs_dx * 1.25:
-                if now - self._last_discrete_action >= self.config.cooldown_seconds:
+            if dy >= self.config.swipe_threshold and abs_dy > abs_dx * 1.25:
+                # Se veio de um TOGGLE_MINIMIZED recente, bloqueia o retorno involuntário da mão para baixo
+                if self._last_swipe_gesture == Gesture.TOGGLE_MINIMIZED and now < self._vertical_opposite_lockout_until:
+                    return None
+
+                if now - self._last_minimize_time >= self.config.minimize_cooldown_seconds and self._can_fire(now):
                     self._last_discrete_action = now
                     self._last_swipe_time = now
+                    self._last_minimize_time = now
                     self._last_swipe_gesture = Gesture.MINIMIZE
+                    self._vertical_opposite_lockout_until = now + self.config.vertical_opposite_lockout_seconds
                     self._palm_history.clear()
                     return GestureEvent(Gesture.MINIMIZE, wrist)
 
-            # 2. Varrer para a esquerda -> SWIPE_LEFT
+            # 2. Puxar para cima -> TOGGLE_MINIMIZED (Abrir / Fechar gaveta de minimizadas)
+            if dy <= -self.config.swipe_threshold and abs_dy > abs_dx * 1.25:
+                # Se veio de um MINIMIZE recente, bloqueia o retorno involuntário da mão para cima
+                if self._last_swipe_gesture == Gesture.MINIMIZE and now < self._vertical_opposite_lockout_until:
+                    return None
+
+                if now - self._last_toggle_minimized_time >= self.config.toggle_minimized_cooldown_seconds and self._can_fire(now):
+                    self._last_discrete_action = now
+                    self._last_swipe_time = now
+                    self._last_toggle_minimized_time = now
+                    self._last_swipe_gesture = Gesture.TOGGLE_MINIMIZED
+                    self._vertical_opposite_lockout_until = now + self.config.vertical_opposite_lockout_seconds
+                    self._palm_history.clear()
+                    return GestureEvent(Gesture.TOGGLE_MINIMIZED, wrist)
+
+            # 3. Varrer para a esquerda -> SWIPE_LEFT
             if dx <= -self.config.swipe_threshold and abs_dx > abs_dy * 1.20:
-                # Se for repetindo na mesma direção (SWIPE_LEFT), cooldown rápido de 0.20s
-                # Se for direção oposta, cooldown de 0.40s para ignorar o retorno da mão
-                min_cooldown = 0.20 if self._last_swipe_gesture == Gesture.SWIPE_LEFT else 0.40
-                if now - self._last_swipe_time >= min_cooldown:
+                # Se o último foi SWIPE_RIGHT, bloqueia o retorno involuntário
+                if self._last_swipe_gesture == Gesture.SWIPE_RIGHT and now < self._swipe_opposite_lockout_until:
+                    return None
+
+                cooldown = self.config.swipe_same_cooldown_seconds if self._last_swipe_gesture == Gesture.SWIPE_LEFT else 0.40
+                if now - self._last_swipe_time >= cooldown:
                     self._last_discrete_action = now
                     self._last_swipe_time = now
                     self._last_swipe_gesture = Gesture.SWIPE_LEFT
+                    self._swipe_opposite_lockout_until = now + self.config.swipe_opposite_lockout_seconds
                     self._palm_history.clear()
                     return GestureEvent(Gesture.SWIPE_LEFT, wrist)
 
-            # 3. Varrer para a direita -> SWIPE_RIGHT
+            # 4. Varrer para a direita -> SWIPE_RIGHT
             if dx >= self.config.swipe_threshold and abs_dx > abs_dy * 1.20:
-                # Se for repetindo na mesma direção (SWIPE_RIGHT), cooldown rápido de 0.20s
-                # Se for direção oposta, cooldown de 0.40s para ignorar o retorno da mão
-                min_cooldown = 0.20 if self._last_swipe_gesture == Gesture.SWIPE_RIGHT else 0.40
-                if now - self._last_swipe_time >= min_cooldown:
+                # Se o último foi SWIPE_LEFT, bloqueia o retorno involuntário
+                if self._last_swipe_gesture == Gesture.SWIPE_LEFT and now < self._swipe_opposite_lockout_until:
+                    return None
+
+                cooldown = self.config.swipe_same_cooldown_seconds if self._last_swipe_gesture == Gesture.SWIPE_RIGHT else 0.40
+                if now - self._last_swipe_time >= cooldown:
                     self._last_discrete_action = now
                     self._last_swipe_time = now
                     self._last_swipe_gesture = Gesture.SWIPE_RIGHT
+                    self._swipe_opposite_lockout_until = now + self.config.swipe_opposite_lockout_seconds
                     self._palm_history.clear()
                     return GestureEvent(Gesture.SWIPE_RIGHT, wrist)
 
@@ -414,7 +498,6 @@ class HandGestureRecognizer:
         dx = index.x - self._previous_filtered_index.x
         dy = index.y - self._previous_filtered_index.y
 
-        # Se houver movimento horizontal relevante, é movimento de mira, não scroll
         if abs(dx) > abs(dy) * 0.7:
             self._scroll_accumulator = 0.0
             return None
@@ -423,10 +506,10 @@ class HandGestureRecognizer:
 
         if self._scroll_accumulator <= -self.config.scroll_threshold:
             self._scroll_accumulator = 0.0
-            return GestureEvent(Gesture.SCROLL, index, amount=6)
+            return GestureEvent(Gesture.SCROLL, index, amount=5)
         elif self._scroll_accumulator >= self.config.scroll_threshold:
             self._scroll_accumulator = 0.0
-            return GestureEvent(Gesture.SCROLL, index, amount=-6)
+            return GestureEvent(Gesture.SCROLL, index, amount=-5)
 
         return None
 
@@ -440,14 +523,12 @@ class HandGestureRecognizer:
 
         dist_from_anchor = self._distance(index, self._dwell_anchor)
 
-        # Se o cursor saiu da bolha estável, redefine âncora
         if dist_from_anchor > self.config.stable_distance:
             self._dwell_anchor = index
             self._dwell_start_time = now
             self._dwell_fired = False
             return None, 0.0
 
-        # Dentro da bolha estável: calcula progresso
         elapsed = now - (self._dwell_start_time or now)
         progress = min(1.0, elapsed / self.config.dwell_seconds)
 
@@ -471,7 +552,7 @@ class HandGestureRecognizer:
         dist_tip_mcp = self._distance(tip, mcp)
         dist_pip_mcp = self._distance(pip, mcp)
 
-        return dist_tip_wrist > dist_pip_wrist * 1.05 and dist_tip_mcp > dist_pip_mcp
+        return (dist_tip_wrist > dist_pip_wrist * 1.01) and (dist_tip_mcp > dist_pip_mcp * 0.98)
 
     def _remember(self, index: Point) -> None:
         self._previous_filtered_index = index
@@ -497,6 +578,10 @@ class HandGestureRecognizer:
         self._thumbs_up_counter = 0
         self._last_swipe_time = 0.0
         self._last_swipe_gesture = None
+        self._swipe_opposite_lockout_until = 0.0
+        self._last_toggle_minimized_time = 0.0
+        self._last_minimize_time = 0.0
+        self._vertical_opposite_lockout_until = 0.0
 
     def _can_fire(self, now: float) -> bool:
         return now - self._last_discrete_action >= self.config.cooldown_seconds

@@ -12,6 +12,7 @@ class Gesture(Enum):
     MAXIMIZE = auto()       # Maximizar (2 braços/mãos para os lados)
     RESTORE = auto()        # Restaurar/Flutuante (2 braços/mãos ao centro)
     MINIMIZE = auto()       # Minimizar (Palma aberta para baixo)
+    TOGGLE_MINIMIZED = auto()# Abrir/Fechar Gaveta Minimizada (Palma aberta para cima)
     SWIPE_LEFT = auto()     # Trocar Área de Trabalho para Esquerda
     SWIPE_RIGHT = auto()    # Trocar Área de Trabalho para Direita
     SCROLL = auto()         # Rolar Página (apenas indicador para cima/baixo)

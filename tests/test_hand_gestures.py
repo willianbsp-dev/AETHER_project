@@ -238,15 +238,64 @@ def test_detects_multiple_consecutive_swipes_with_same_hand() -> None:
             break
     assert first_detected
 
-    # 2º Swipe para a direita com a mesma mão após 0.3s
+    # 2º Swipe para a direita com a mesma mão após 0.45s
     second_detected = False
     for i in range(5):
         hand = offset_hand(base_hand, dx=i * 0.035, dy=0.0)
-        ev = recognizer.update(hand, now=1.5 + i * 0.05)
+        ev = recognizer.update(hand, now=1.6 + i * 0.05)
         if ev.gesture is Gesture.SWIPE_RIGHT:
             second_detected = True
             break
     assert second_detected
+
+
+def test_swipe_recoil_is_blocked() -> None:
+    recognizer = HandGestureRecognizer()
+    base_hand = create_hand(
+        wrist=(0.4, 0.5),
+        thumb=(0.2, 0.3),
+        index=(0.35, 0.2),
+        middle=(0.4, 0.18),
+        ring=(0.45, 0.2),
+        pinky=(0.5, 0.25),
+    )
+
+    # 1. Swipe para a direita
+    for i in range(5):
+        hand = offset_hand(base_hand, dx=i * 0.035, dy=0.0)
+        recognizer.update(hand, now=1.0 + i * 0.05)
+
+    # 2. Retorno imediato da mão para a esquerda (dentro de 0.8s) -> DEVE SER BLOQUEADO
+    recoil_detected = False
+    for i in range(5):
+        hand = offset_hand(base_hand, dx=0.15 - (i * 0.035), dy=0.0)
+        ev = recognizer.update(hand, now=1.3 + i * 0.05)
+        if ev.gesture is Gesture.SWIPE_LEFT:
+            recoil_detected = True
+            break
+
+    assert not recoil_detected
+
+
+def test_detects_toggle_minimized_open_palm_up() -> None:
+    recognizer = HandGestureRecognizer()
+    base_hand = create_hand(
+        wrist=(0.5, 0.5),
+        thumb=(0.3, 0.3),
+        index=(0.45, 0.2),
+        middle=(0.5, 0.18),
+        ring=(0.55, 0.2),
+        pinky=(0.6, 0.25),
+    )
+    detected = False
+    for i in range(6):
+        hand = offset_hand(base_hand, dx=0.0, dy=-i * 0.035)
+        ev = recognizer.update(hand, now=1.0 + i * 0.05)
+        if ev.gesture is Gesture.TOGGLE_MINIMIZED:
+            detected = True
+            break
+
+    assert detected
 
 
 def test_detects_two_hands_maximize_and_restore() -> None:
@@ -321,14 +370,17 @@ def test_circle_in_hand_recognizer_triggers_page_forward() -> None:
 
 def test_detects_zoom_in_and_out() -> None:
     recognizer = HandGestureRecognizer()
-    # Posição inicial de pinça
-    h1 = create_hand(thumb=(0.45, 0.45), index=(0.50, 0.45), **folded_other_fingers())
+    # Pinça aberta (acima do limiar de arrasto) para não competir com PINCH
+    h1 = create_hand(thumb=(0.42, 0.45), index=(0.54, 0.45), **folded_other_fingers())
     recognizer.update(h1, now=1.0)
 
-    # Afastar polegar do indicador para Zoom In
     detected_in = False
-    for i in range(5):
-        h = create_hand(thumb=(0.45 - i * 0.02, 0.45), index=(0.50 + i * 0.02, 0.45), **folded_other_fingers())
+    for i in range(6):
+        h = create_hand(
+            thumb=(0.42 - i * 0.015, 0.45),
+            index=(0.54 + i * 0.015, 0.45),
+            **folded_other_fingers(),
+        )
         ev = recognizer.update(h, now=1.05 + i * 0.05)
         if ev.gesture is Gesture.ZOOM_IN:
             detected_in = True
@@ -336,19 +388,34 @@ def test_detects_zoom_in_and_out() -> None:
 
     assert detected_in
 
-    # Reset
     recognizer.update([], now=1.5)
 
-    # Inicia aberto e aproxima para Zoom Out
     h_start = create_hand(thumb=(0.38, 0.45), index=(0.58, 0.45), **folded_other_fingers())
     recognizer.update(h_start, now=2.0)
 
     detected_out = False
-    for i in range(5):
-        h = create_hand(thumb=(0.38 + i * 0.02, 0.45), index=(0.58 - i * 0.02, 0.45), **folded_other_fingers())
+    for i in range(6):
+        h = create_hand(
+            thumb=(0.38 + i * 0.015, 0.45),
+            index=(0.58 - i * 0.015, 0.45),
+            **folded_other_fingers(),
+        )
         ev = recognizer.update(h, now=2.05 + i * 0.05)
         if ev.gesture is Gesture.ZOOM_OUT:
             detected_out = True
             break
 
     assert detected_out
+
+
+def test_closed_pinch_is_drag_not_zoom() -> None:
+    recognizer = HandGestureRecognizer()
+    hand = create_hand(
+        thumb=(0.49, 0.45),
+        index=(0.50, 0.45),
+        **folded_other_fingers(),
+    )
+    events = [recognizer.update(hand, now=1.0 + i * 0.05).gesture for i in range(4)]
+    assert Gesture.PINCH in events
+    assert Gesture.ZOOM_IN not in events
+    assert Gesture.ZOOM_OUT not in events

@@ -19,6 +19,7 @@ GESTURE_LABELS: dict[Gesture, str] = {
     Gesture.MAXIMIZE: "Maximizar (2 Mãos)",
     Gesture.RESTORE: "Restaurar (2 Mãos)",
     Gesture.MINIMIZE: "Minimizar (Palma p/ Baixo)",
+    Gesture.TOGGLE_MINIMIZED: "Gaveta de Minimizadas (Palma p/ Cima)",
     Gesture.SWIPE_LEFT: "Área de Trabalho Anterior",
     Gesture.SWIPE_RIGHT: "Próxima Área de Trabalho",
     Gesture.SCROLL: "Rolar Página",
@@ -52,6 +53,11 @@ def main() -> None:
     parser.add_argument("--control", action="store_true", help="habilita automação real do computador")
     parser.add_argument("--camera", type=int, default=0, help="índice da webcam a utilizar (padrão: 0)")
     parser.add_argument("--max-frame-width", type=int, default=960, help="largura máxima do quadro processado")
+    parser.add_argument(
+        "--voice-hotkey",
+        default="",
+        help="atalho de ditado para o joinha, separado por vírgula (ex: super,alt,v)",
+    )
     args = parser.parse_args()
 
     print(f"Abrindo webcam {args.camera}...")
@@ -60,7 +66,8 @@ def main() -> None:
         raise RuntimeError("Não foi possível acessar a webcam padrão.")
 
     recognizer = HandGestureRecognizer()
-    automation = DesktopAutomation(enabled=args.control)
+    voice_hotkey = tuple(part.strip() for part in args.voice_hotkey.split(",") if part.strip())
+    automation = DesktopAutomation(enabled=args.control, voice_hotkey=voice_hotkey or None)
     model_path = ensure_hand_landmarker_model()
     print("Inicializando reconhecimento de mãos (até 2 mãos com suavização One-Euro)...")
     options = mp.tasks.vision.HandLandmarkerOptions(
@@ -74,10 +81,12 @@ def main() -> None:
 
     window_name = "Machine Feira - Controle por Gestos"
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
-    try:
-        cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
-    except Exception:
-        pass
+    # Em modo seguro a HUD pode ficar na frente. Com --control isso roubaria cliques/arrasto.
+    if not args.control:
+        try:
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+        except Exception:
+            pass
 
     try:
         with mp.tasks.vision.HandLandmarker.create_from_options(options) as detector:
@@ -108,6 +117,7 @@ def main() -> None:
                     label = GESTURE_LABELS.get(event.gesture, event.gesture.name)
                 else:
                     recognizer.update([])
+                    automation.release()
 
                 mode = "CONTROLE ATIVO" if args.control else "MODO SEGURO"
                 mode_color = (0, 0, 255) if args.control else (0, 200, 0)

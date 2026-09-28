@@ -138,6 +138,32 @@ def test_voice_activation_callback() -> None:
     assert voice_triggered == [True]
 
 
+def test_voice_hotkey_and_noop_without_binding() -> None:
+    automation, fake_gui, _ = _setup_automation()
+    automation.handle(GestureEvent(Gesture.VOICE_ACTIVATE, Point(0.5, 0.5)))
+    assert fake_gui.hotkeys == []
+
+    automation.voice_hotkey = ("super", "alt", "v")
+    automation.handle(GestureEvent(Gesture.VOICE_ACTIVATE, Point(0.5, 0.5)))
+    assert ("super", "alt", "v") in fake_gui.hotkeys
+
+
+def test_restore_toggles_floating_when_window_is_normal() -> None:
+    automation, _, fake_hypr = _setup_automation()
+    fake_hypr.active_window = {"fullscreen": 0, "title": "Test Window"}
+    automation.handle(GestureEvent(Gesture.RESTORE, Point(0.5, 0.5)))
+    assert "hl.dsp.window.float({ action = 'toggle' })" in fake_hypr.dispatched
+
+
+def test_release_stops_drag() -> None:
+    automation, fake_gui, _ = _setup_automation()
+    automation.handle(GestureEvent(Gesture.PINCH, Point(0.2, 0.2)))
+    assert automation._dragging
+    automation.release()
+    assert not automation._dragging
+    assert fake_gui.mouse_up_called
+
+
 def test_hyprland_window_and_workspace_actions() -> None:
     automation, _, fake_hypr = _setup_automation(hyprland_available=True)
 
@@ -148,14 +174,13 @@ def test_hyprland_window_and_workspace_actions() -> None:
     assert "hl.dsp.window.fullscreen_state({ internal = 0, client = 0 })" in fake_hypr.dispatched
 
     automation.handle(GestureEvent(Gesture.MINIMIZE, Point(0.5, 0.5)))
-    assert "hl.dsp.window.move({ workspace = 'special:magic' })" in fake_hypr.dispatched
     assert "hl.dsp.window.move({ workspace = 'special:minimized' })" in fake_hypr.dispatched
 
     automation.handle(GestureEvent(Gesture.SWIPE_LEFT, Point(0.5, 0.5)))
-    assert "hl.dsp.focus({ workspace = 'r-1' })" in fake_hypr.dispatched
+    assert "hl.dsp.focus({ workspace = 'e-1' })" in fake_hypr.dispatched
 
     automation.handle(GestureEvent(Gesture.SWIPE_RIGHT, Point(0.5, 0.5)))
-    assert "hl.dsp.focus({ workspace = 'r+1' })" in fake_hypr.dispatched
+    assert "hl.dsp.focus({ workspace = 'e+1' })" in fake_hypr.dispatched
 
 
 def test_hyprland_fallback_when_unavailable() -> None:
@@ -164,8 +189,10 @@ def test_hyprland_fallback_when_unavailable() -> None:
     automation.handle(GestureEvent(Gesture.MAXIMIZE, Point(0.5, 0.5)))
     assert ("super", "f") in fake_gui.hotkeys
 
+    automation.handle(GestureEvent(Gesture.RESTORE, Point(0.5, 0.5)))
+    assert ("super", "v") in fake_gui.hotkeys
+
     automation.handle(GestureEvent(Gesture.MINIMIZE, Point(0.5, 0.5)))
-    assert ("super", "shift", "s") in fake_gui.hotkeys
     assert ("super", "shift", "m") in fake_gui.hotkeys
 
     automation.handle(GestureEvent(Gesture.SWIPE_LEFT, Point(0.5, 0.5)))
