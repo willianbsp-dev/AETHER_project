@@ -35,31 +35,29 @@ Sistema de controle de computador por gestos aéreos em tempo real, utilizando w
 
 ## 🖐️ Catálogo Completo de Gestos
 
-### 1. Gerenciamento de Janelas e Telas (Hyprland)
-| Gesto | Como Fazer | Ação Executada |
-| :--- | :--- | :--- |
-| **Mover Janela / Arrastar** | Unir polegar e indicador (**pinça**) sobre a janela e mover a mão. Abrir os dedos para soltar. |
-| **Maximizar Janela** | Abrir os dois braços/mãos simultaneamente para os lados (afastamento). |
-| **Restaurar / Desminimizar** | Aproximar os dois braços/mãos ao centro (ou sinal de OK 👌). | Desfaz fullscreen ou alterna flutuante |
-| **Minimizar Janela** | Palma da mão aberta empurrando para **baixo**. |
-| **Gaveta de Minimizadas (Toggle)** | Palma da mão aberta empurrando para **cima**. |
-| **Trocar Área de Trabalho** | Palma aberta varrendo para a **esquerda** ou para a **direita** (com anti-recoil). | 
+### Contrato atual de gestos
 
-### 2. Navegação e Zoom
-| Gesto | Como Fazer | Ação Executada |
-| :--- | :--- | :--- |
-| **Rolar Página (Scroll)** | Manter **apenas o indicador estendido** e movê-lo para cima ou para baixo. |
-| **Zoom In (Ampliar)** | Fazer pinça e afastar o polegar do indicador. |
-| **Zoom Out (Reduzir)** | Fazer pinça e aproximar o polegar do indicador. |
-| **Avançar Página** | Desenhar um **círculo no ar no sentido horário** com o indicador. |
-| **Voltar Página** | Desenhar um **círculo no ar no sentido anti-horário** com o indicador. |
+| Gesto | Ação |
+| :--- | :--- |
+| 1 dwell | Clique esquerdo |
+| 2 dwells | Clique direito |
+| 🤏 Pinça | Arrastar janela |
+| 🖐️ + 🤏 / pinça dinâmica | Zoom; afastar = zoom in, aproximar = zoom out |
+| 👐 juntas, sobem e afastam | Maximizar |
+| 👐 afastadas, descem e aproximam | Minimizar |
+| ☝️ movimento vertical | Scroll |
+| Círculo horário | Avançar |
+| Círculo anti-horário | Desfazer (`Ctrl+Z`) |
+| Swipe de palma | Trocar área de trabalho |
+| 👐 posição de digitação | Abrir teclado virtual disponível |
+| ⌨️ indicador parado | Clique esquerdo na tecla |
+| 👌 OK | Ativar voz/digitação |
+| 👍 Joinha | Enter/confirmar |
+| ✊ punho mantido | Pausar; repetir retoma |
+| 🖐️ inicial | Calibração automática |
 
-### 3. Cliques e Digitação
-| Gesto | Como Fazer | Ação Executada |
-| :--- | :--- | :--- |
-| **Clicar (Links/Botões)** | Apontar com o indicador e segurar a mão parada por 0,5s (*Dwell Time*). |
-| **Ativar Voz/Digitação** | Fazer o sinal de joinha 👍 (polegar para cima e outros dedos fechados). |
-| **Confirmar / Enviar** | Fazer o sinal de OK 👌 (polegar e indicador unidos, outros 3 estendidos). |
+Todas as mãos são validadas pelos 21 landmarks antes do processamento e passam
+por filtros temporais/tolerâncias para reduzir tremores.
 
 ---
 
@@ -97,6 +95,13 @@ Habilita o controle real do cursor, cliques e comandos do Hyprland:
 ```bash
 machine-feira --control
 ```
+
+O cursor funciona como um trackpad: o primeiro quadro fixa a posição atual e os
+movimentos seguintes deslocam o mouse continuamente, sem saltos absolutos.
+
+O gesto de joinha ativa diretamente o ditado offline AETHER. O atalho
+`Super + Alt + V` no Hyprland também alterna o mesmo serviço. Se necessário,
+um atalho externo ainda pode ser usado com `--voice-hotkey tecla1,tecla2,...`.
 
 *Dica*: Pressione a tecla `q` na janela da câmera para encerrar a qualquer momento.
 

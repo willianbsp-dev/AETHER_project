@@ -3,21 +3,24 @@
 from __future__ import annotations
 
 import argparse
+import logging
 
 import cv2
 import mediapipe as mp
 
 from .automation import DesktopAutomation
-from .hand_gestures import HandGestureRecognizer
+from .hand_gestures import GestureConfig, HandGestureRecognizer
 from .models import ensure_hand_landmarker_model
 from .types import Gesture, GestureEvent
+
+logger = logging.getLogger(__name__)
 
 # Mapa de nomes amigáveis para exibição na interface
 GESTURE_LABELS: dict[Gesture, str] = {
     Gesture.NONE: "Navegando",
     Gesture.PINCH: "Mover Janela (Pinça)",
     Gesture.MAXIMIZE: "Maximizar (2 Mãos)",
-    Gesture.RESTORE: "Restaurar (2 Mãos)",
+    Gesture.RESTORE: "Restaurar (compatibilidade)",
     Gesture.MINIMIZE: "Minimizar (Palma p/ Baixo)",
     Gesture.TOGGLE_MINIMIZED: "Gaveta de Minimizadas (Palma p/ Cima)",
     Gesture.SWIPE_LEFT: "Área de Trabalho Anterior",
@@ -26,10 +29,14 @@ GESTURE_LABELS: dict[Gesture, str] = {
     Gesture.ZOOM_IN: "Zoom In (+)",
     Gesture.ZOOM_OUT: "Zoom Out (-)",
     Gesture.PAGE_FORWARD: "Avançar Página (Círculo Horário)",
-    Gesture.PAGE_BACK: "Voltar Página (Círculo Anti-Horário)",
-    Gesture.DWELL_CLICK: "Clique Confirmado!",
-    Gesture.VOICE_ACTIVATE: "Voz / Ditado (👍)",
-    Gesture.CONFIRM: "Confirmar / Enter (👌)",
+    Gesture.PAGE_BACK: "Voltar / Desfazer",
+    Gesture.UNDO: "Desfazer (Ctrl+Z)",
+    Gesture.DWELL_CLICK: "Clique esquerdo",
+    Gesture.DOUBLE_CLICK: "Clique direito",
+    Gesture.VOICE_ACTIVATE: "Voz / Ditado (👌)",
+    Gesture.CONFIRM: "Confirmar / Enter (👍)",
+    Gesture.PAUSE_TOGGLE: "Pausar / Retomar (Punho)",
+    Gesture.VIRTUAL_KEYBOARD: "Teclado virtual",
 }
 
 HAND_COLORS = [
@@ -65,7 +72,7 @@ def main() -> None:
     if not camera.isOpened():
         raise RuntimeError("Não foi possível acessar a webcam padrão.")
 
-    recognizer = HandGestureRecognizer()
+    recognizer = HandGestureRecognizer(GestureConfig(calibration_frames=12))
     voice_hotkey = tuple(part.strip() for part in args.voice_hotkey.split(",") if part.strip())
     automation = DesktopAutomation(enabled=args.control, voice_hotkey=voice_hotkey or None)
     model_path = ensure_hand_landmarker_model()
@@ -107,7 +114,13 @@ def main() -> None:
                 if result.hand_landmarks:
                     hands_count = len(result.hand_landmarks)
                     event = recognizer.update(result.hand_landmarks)
-                    automation.handle(event)
+                    try:
+                        automation.handle(event)
+                    except Exception:
+                        # Um backend gráfico (especialmente X11 sobre
+                        # Wayland) não pode encerrar o loop da câmera inteiro.
+                        logger.exception("Falha ao executar o gesto %s", event.gesture.name)
+                        automation.release()
 
                     for idx, hand_lms in enumerate(result.hand_landmarks):
                         color = HAND_COLORS[idx % len(HAND_COLORS)]

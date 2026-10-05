@@ -9,6 +9,7 @@ class _FakePyAutoGUI:
 
     def __init__(self) -> None:
         self.moved_to: tuple[int, int] | None = None
+        self.position_now = (500, 250)
         self.mouse_down_called = False
         self.mouse_up_called = False
         self.clicks = 0
@@ -21,6 +22,10 @@ class _FakePyAutoGUI:
 
     def moveTo(self, x: int, y: int, duration: float = 0) -> None:  # noqa: N802
         self.moved_to = (x, y)
+        self.position_now = (x, y)
+
+    def position(self) -> tuple[int, int]:
+        return self.position_now
 
     def mouseDown(self) -> None:  # noqa: N802
         self.mouse_down_called = True
@@ -28,8 +33,10 @@ class _FakePyAutoGUI:
     def mouseUp(self) -> None:  # noqa: N802
         self.mouse_up_called = True
 
-    def click(self) -> None:
+    def click(self, button: str = "left") -> None:
         self.clicks += 1
+        if button == "right":
+            self.right_clicks = getattr(self, "right_clicks", 0) + 1
 
     def scroll(self, amount: int) -> None:
         self.scrolled += amount
@@ -39,6 +46,12 @@ class _FakePyAutoGUI:
 
     def press(self, key: str) -> None:
         self.pressed.append(key)
+
+    def keyDown(self, key: str) -> None:  # noqa: N802
+        self.pressed.append(f"down_{key}")
+
+    def keyUp(self, key: str) -> None:  # noqa: N802
+        self.pressed.append(f"up_{key}")
 
 
 class _FakeHyprland(HyprlandDispatcher):
@@ -83,8 +96,12 @@ def _setup_automation(hyprland_available: bool = True) -> tuple[DesktopAutomatio
 
 def test_cursor_mapping() -> None:
     automation, fake_gui, _ = _setup_automation()
+    # O primeiro quadro cria a âncora; o segundo desloca o ponteiro pela
+    # diferença do dedo, sem saltar para uma coordenada absoluta.
     automation.handle(GestureEvent(Gesture.NONE, Point(0.5, 0.5)))
-    assert fake_gui.moved_to == (500, 250)
+    assert fake_gui.moved_to is None
+    automation.handle(GestureEvent(Gesture.NONE, Point(0.6, 0.6)))
+    assert fake_gui.moved_to == (635, 317)
 
 
 def test_drag_and_release() -> None:
@@ -106,6 +123,9 @@ def test_navigation_and_clicks() -> None:
     automation.handle(GestureEvent(Gesture.DWELL_CLICK, Point(0.5, 0.5)))
     assert fake_gui.clicks == 1
 
+    automation.handle(GestureEvent(Gesture.DOUBLE_CLICK, Point(0.5, 0.5)))
+    assert fake_gui.right_clicks == 1
+
     automation.handle(GestureEvent(Gesture.SCROLL, Point(0.5, 0.5), amount=10))
     assert fake_gui.scrolled == 10
 
@@ -119,7 +139,7 @@ def test_navigation_and_clicks() -> None:
     assert ("alt", "right") in fake_gui.hotkeys
 
     automation.handle(GestureEvent(Gesture.PAGE_BACK, Point(0.5, 0.5)))
-    assert ("alt", "left") in fake_gui.hotkeys
+    assert ("ctrl", "z") in fake_gui.hotkeys
 
     automation.handle(GestureEvent(Gesture.CONFIRM, Point(0.5, 0.5)))
     assert "enter" in fake_gui.pressed
@@ -138,7 +158,7 @@ def test_voice_activation_callback() -> None:
     assert voice_triggered == [True]
 
 
-def test_voice_hotkey_and_noop_without_binding() -> None:
+def test_voice_hotkey_can_be_configured() -> None:
     automation, fake_gui, _ = _setup_automation()
     automation.handle(GestureEvent(Gesture.VOICE_ACTIVATE, Point(0.5, 0.5)))
     assert fake_gui.hotkeys == []
@@ -168,19 +188,19 @@ def test_hyprland_window_and_workspace_actions() -> None:
     automation, _, fake_hypr = _setup_automation(hyprland_available=True)
 
     automation.handle(GestureEvent(Gesture.MAXIMIZE, Point(0.5, 0.5)))
-    assert "hl.dsp.window.fullscreen_state({ internal = 1, client = 0 })" in fake_hypr.dispatched
+    assert "hl.dsp.window.fullscreen_state({ internal = 1, client = 0, action = 'toggle' })" in fake_hypr.dispatched
 
     automation.handle(GestureEvent(Gesture.RESTORE, Point(0.5, 0.5)))
     assert "hl.dsp.window.fullscreen_state({ internal = 0, client = 0 })" in fake_hypr.dispatched
 
     automation.handle(GestureEvent(Gesture.MINIMIZE, Point(0.5, 0.5)))
-    assert "hl.dsp.window.move({ workspace = 'special:minimized' })" in fake_hypr.dispatched
+    assert "hl.dsp.window.move({ workspace = 'special:minimized', follow = false })" in fake_hypr.dispatched
 
     automation.handle(GestureEvent(Gesture.SWIPE_LEFT, Point(0.5, 0.5)))
-    assert "hl.dsp.focus({ workspace = 'e-1' })" in fake_hypr.dispatched
+    assert "hl.dsp.focus({ workspace = 'r-1' })" in fake_hypr.dispatched
 
     automation.handle(GestureEvent(Gesture.SWIPE_RIGHT, Point(0.5, 0.5)))
-    assert "hl.dsp.focus({ workspace = 'e+1' })" in fake_hypr.dispatched
+    assert "hl.dsp.focus({ workspace = 'r+1' })" in fake_hypr.dispatched
 
 
 def test_hyprland_fallback_when_unavailable() -> None:

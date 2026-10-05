@@ -21,8 +21,12 @@ class Gesture(Enum):
     PAGE_FORWARD = auto()   # Avançar Página (círculo horário no ar)
     PAGE_BACK = auto()      # Voltar Página (círculo anti-horário no ar)
     DWELL_CLICK = auto()    # Clicar em Links/Botões (indicador estável por 0.5s)
-    VOICE_ACTIVATE = auto() # Ativar Voz/Digitação (joinha 👍)
-    CONFIRM = auto()        # Confirmar/Enviar (OK 👌)
+    DOUBLE_CLICK = auto()   # Segundo dwell: clique direito
+    VOICE_ACTIVATE = auto() # Ativar Voz/Digitação (OK 👌)
+    CONFIRM = auto()        # Confirmar/Enviar (joinha 👍)
+    UNDO = auto()            # Desfazer (círculo anti-horário)
+    PAUSE_TOGGLE = auto()    # Pausar/retomar (punho fechado)
+    VIRTUAL_KEYBOARD = auto()# Abrir teclado virtual (posição de digitação)
 
 
 @dataclass(frozen=True)
@@ -39,4 +43,3 @@ class GestureEvent:
     amount: int = 0
     dwell_progress: float = 0.0
     trail: list[Point] = field(default_factory=list)
-

@@ -132,10 +132,24 @@ class HyprlandDispatcher:
         )
 
     def is_special_workspace_open(self, name: str = "minimized") -> bool:
-        """Verifica se o workspace especial está visível em algum monitor."""
+        """Verifica se o workspace especial está visível em algum monitor ou focado."""
         if not self.is_available():
             return False
         try:
+            # 1. Verifica no activeworkspace se a janela focada está no special
+            act_res = subprocess.run(
+                [self.hyprctl_bin, "-j", "activeworkspace"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=0.3,
+            )
+            if act_res.returncode == 0 and act_res.stdout.strip():
+                act_ws = json.loads(act_res.stdout)
+                if name.lower() in str(act_ws.get("name", "")).lower():
+                    return True
+
+            # 2. Verifica nos monitores se o specialWorkspace está ativo
             result = subprocess.run(
                 [self.hyprctl_bin, "-j", "monitors"],
                 capture_output=True,
@@ -147,7 +161,9 @@ class HyprlandDispatcher:
                 monitors = json.loads(result.stdout)
                 for mon in monitors:
                     special = mon.get("specialWorkspace", {})
-                    if name.lower() in str(special.get("name", "")).lower():
+                    spec_id = special.get("id", 0)
+                    spec_name = str(special.get("name", "")).lower()
+                    if spec_id != 0 and name.lower() in spec_name:
                         return True
         except Exception:
             pass
@@ -172,12 +188,38 @@ class HyprlandDispatcher:
         return None
 
     def ensure_camera_unfocused(self, camera_title_keyword: str = "Machine Feira") -> None:
-        """Se a janela ativa for a câmera do OpenCV, passa o foco para a próxima janela."""
+        """Garante que ações sejam enviadas para uma janela real, nunca à câmera."""
         active = self.get_active_window()
         if not active:
             return
-        title = str(active.get("title", "")).lower()
-        if camera_title_keyword.lower() not in title:
+        camera_keyword = camera_title_keyword.lower()
+        active_text = " ".join(
+            str(active.get(field, "")) for field in ("title", "class", "initialClass")
+        ).lower()
+        if camera_keyword not in active_text:
             return
+
+        # O ciclo de foco pode voltar para a própria câmera. Primeiro procura
+        # uma janela mapeada que não seja ela e foca pelo endereço Hyprland.
+        try:
+            result = subprocess.run(
+                [self.hyprctl_bin, "-j", "clients"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=0.3,
+            )
+            clients = json.loads(result.stdout) if result.returncode == 0 else []
+            for client in clients:
+                client_text = " ".join(
+                    str(client.get(field, "")) for field in ("title", "class", "initialClass")
+                ).lower()
+                address = client.get("address")
+                if address and camera_keyword not in client_text and client.get("mapped", True):
+                    if self.dispatch_raw("focuswindow", f"address:{address}"):
+                        return
+        except (OSError, ValueError, TypeError):
+            pass
+
         if not self.dispatch_raw("hl.dsp.window.cycle_next()"):
             self.dispatch_raw("cyclenext")

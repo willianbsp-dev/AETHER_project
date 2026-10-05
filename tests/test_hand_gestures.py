@@ -95,6 +95,11 @@ def test_detects_pinch() -> None:
     assert event.gesture is Gesture.PINCH
 
 
+def test_rejects_incomplete_landmarks() -> None:
+    recognizer = HandGestureRecognizer()
+    assert recognizer.update([Landmark(0.5, 0.5)] * 20, now=1.0).gesture is Gesture.NONE
+
+
 def test_detects_scroll_with_only_index_extended() -> None:
     recognizer = HandGestureRecognizer()
     # Mover o indicador para cima ao longo de frames
@@ -125,14 +130,14 @@ def test_detects_dwell_click() -> None:
     # 0.25s depois (progresso em ~50%)
     ev_mid = recognizer.update(hand_pos, now=1.25)
     assert ev_mid.gesture is Gesture.NONE
-    assert 0.4 <= ev_mid.dwell_progress <= 0.6
+    assert 0.55 <= ev_mid.dwell_progress <= 0.7
 
     # 0.55s depois (deve disparar DWELL_CLICK)
     ev_click = recognizer.update(hand_pos, now=1.55)
     assert ev_click.gesture is Gesture.DWELL_CLICK
 
 
-def test_detects_thumbs_up_voice_activate() -> None:
+def test_detects_thumbs_up_confirm() -> None:
     recognizer = HandGestureRecognizer()
     # Todos os 4 dedos dobrados, polegar apontando para cima por 2+ frames
     hand = create_hand(
@@ -144,10 +149,21 @@ def test_detects_thumbs_up_voice_activate() -> None:
     )
     recognizer.update(hand, now=1.0)
     event = recognizer.update(hand, now=1.05)
-    assert event.gesture is Gesture.VOICE_ACTIVATE
+    assert event.gesture is Gesture.CONFIRM
+
+    # Manter a mão levantada não pode repetir o Enter a cada cooldown.
+    for i in range(3, 12):
+        event = recognizer.update(hand, now=1.05 + i * 0.40)
+        assert event.gesture is Gesture.NONE
+
+    # Só rearma depois que o gesto é realmente solto.
+    recognizer.update(create_hand(), now=6.0)
+    recognizer.update(hand, now=6.1)
+    event = recognizer.update(hand, now=6.2)
+    assert event.gesture is Gesture.CONFIRM
 
 
-def test_detects_ok_sign_confirm() -> None:
+def test_detects_ok_sign_voice_activate() -> None:
     recognizer = HandGestureRecognizer()
     # Polegar e indicador em pinça, outros dedos estendidos por 2+ frames
     hand = create_hand(
@@ -159,7 +175,7 @@ def test_detects_ok_sign_confirm() -> None:
     )
     recognizer.update(hand, now=1.0)
     event = recognizer.update(hand, now=1.05)
-    assert event.gesture is Gesture.CONFIRM
+    assert event.gesture is Gesture.VOICE_ACTIVATE
 
 
 def test_detects_open_palm_minimize() -> None:
@@ -279,14 +295,7 @@ def test_swipe_recoil_is_blocked() -> None:
 
 def test_detects_toggle_minimized_open_palm_up() -> None:
     recognizer = HandGestureRecognizer()
-    base_hand = create_hand(
-        wrist=(0.5, 0.5),
-        thumb=(0.3, 0.3),
-        index=(0.45, 0.2),
-        middle=(0.5, 0.18),
-        ring=(0.55, 0.2),
-        pinky=(0.6, 0.25),
-    )
+    base_hand = create_hand()
     detected = False
     for i in range(6):
         hand = offset_hand(base_hand, dx=0.0, dy=-i * 0.035)
@@ -339,7 +348,7 @@ def test_two_hands_stationary_falls_back_to_primary_hand() -> None:
 
     recognizer.update([hand1, hand2], now=1.0)
     ev = recognizer.update([hand1, hand2], now=1.05)
-    assert ev.gesture is Gesture.CONFIRM
+    assert ev.gesture is Gesture.VOICE_ACTIVATE
 
 
 def test_circle_in_hand_recognizer_triggers_page_forward() -> None:

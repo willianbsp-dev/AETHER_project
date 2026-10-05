@@ -12,13 +12,13 @@ from .types import Gesture, Point
 
 @dataclass(frozen=True)
 class CircleConfig:
-    min_radius: float = 0.025
-    min_accumulated_angle: float = 3.8  # ~218 graus em radianos
-    min_points: int = 8
+    min_radius: float = 0.020
+    min_accumulated_angle: float = 2.8  # ~160 graus em radianos (arco fluido no ar)
+    min_points: int = 6
     max_duration: float = 2.0
-    min_duration: float = 0.20
-    aspect_ratio_min: float = 0.25
-    closure_threshold: float = 0.85
+    min_duration: float = 0.15
+    aspect_ratio_min: float = 0.20
+    closure_threshold: float = 0.90
 
 
 @dataclass
