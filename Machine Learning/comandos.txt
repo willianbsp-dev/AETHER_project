@@ -1,0 +1,76 @@
+
+$ErrorActionPreference = "Stop"
+
+Write-Host "`n=== 1. VERIFICANDO O PYTHON ===" -ForegroundColor Cyan
+
+if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
+    throw "Python Launcher não encontrado. Instale o Python 3.11 e marque a opção de adicionar o Python ao PATH."
+}
+
+py --version
+py -0p
+
+Write-Host "`n=== 2. ACESSANDO O PROJETO ===" -ForegroundColor Cyan
+
+Set-Location "D:\Feira Tecnológica\Machine Learning"
+
+if (-not (Test-Path ".\pyproject.toml")) {
+    throw "pyproject.toml não encontrado. Confira a pasta do projeto."
+}
+
+if (-not (Test-Path ".\src\machine_feira\main.py")) {
+    throw "main.py não encontrado no caminho esperado."
+}
+
+Write-Host "`n=== 3. CRIANDO O AMBIENTE VIRTUAL ===" -ForegroundColor Cyan
+
+if (-not (Test-Path ".\.venv\Scripts\python.exe")) {
+    py -3.11 -m venv .venv
+}
+
+if (-not (Test-Path ".\.venv\Scripts\python.exe")) {
+    throw "Não foi possível criar o ambiente virtual."
+}
+
+Write-Host "`n=== 4. ATIVANDO O AMBIENTE VIRTUAL ===" -ForegroundColor Cyan
+
+& ".\.venv\Scripts\Activate.ps1"
+
+if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+    throw "Falha ao ativar o ambiente virtual."
+}
+
+python --version
+python -c "import sys; print('Python utilizado:', sys.executable)"
+
+Write-Host "`n=== 5. INSTALANDO AS DEPENDÊNCIAS ===" -ForegroundColor Cyan
+
+python -m pip install --upgrade pip
+python -m pip install -e .
+python -m pip install pytest
+
+Write-Host "`n=== 6. VERIFICANDO AS DEPENDÊNCIAS ===" -ForegroundColor Cyan
+
+python -m pip check
+python -c "import cv2, mediapipe, pyautogui; print('Bibliotecas principais carregadas'); print('OpenCV:', cv2.__version__); print('MediaPipe:', mediapipe.__version__)"
+
+Write-Host "`n=== 7. EXECUTANDO OS TESTES AUTOMATIZADOS ===" -ForegroundColor Cyan
+
+$env:PYTHONPATH = "src"
+python -m pytest -v
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Existem testes que falharam. Confira os erros acima antes de iniciar a demonstração."
+}
+
+Write-Host "`n=== 8. INICIANDO O AETHER ===" -ForegroundColor Cyan
+
+python -m machine_feira.main
+
+
+
+
+
+
+
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass

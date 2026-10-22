@@ -1,0 +1,8 @@
+{
+  "scroll_threshold": 0.06,
+  "scroll_intensity": 24,
+  "pinch_distance_start": 0.045,
+  "zoom_step_distance": 0.0412,
+  "tremor_strength": 100,
+  "cursor_gain": 1.55
+}

@@ -1,0 +1,155 @@
+"""Camada de automação desktop para Windows."""
+
+from __future__ import annotations
+
+from typing import Callable
+
+from .types import Gesture, GestureEvent
+from .windows import WindowsDispatcher
+
+
+NON_CURSOR_GESTURES = {
+    Gesture.MAXIMIZE,
+    Gesture.RESTORE,
+    Gesture.MINIMIZE,
+    Gesture.SWIPE_LEFT,
+    Gesture.SWIPE_RIGHT,
+    Gesture.VOICE_ACTIVATE,
+    Gesture.CONFIRM,
+    Gesture.PAUSE_TOGGLE,
+    Gesture.KEYBOARD_TOGGLE,
+    Gesture.ZOOM_IN,
+    Gesture.ZOOM_OUT,
+    Gesture.PAGE_FORWARD,
+    Gesture.PAGE_BACK,
+    Gesture.UNDO,
+    Gesture.CONFIRM,
+}
+
+
+class DesktopAutomation:
+    def __init__(
+        self,
+        enabled: bool = False,
+        windows: WindowsDispatcher | None = None,
+        on_voice_activate: Callable[[], None] | None = None,
+    ) -> None:
+        self.enabled = enabled
+        self.scroll_amount = 6
+        self.cursor_gain = 1.55
+        self._dragging = False
+        self._paused = False
+        self._pyautogui = None
+        self._last_screen_pos: tuple[int, int] | None = None
+        self.windows = windows or WindowsDispatcher()
+        self.on_voice_activate = on_voice_activate
+
+        # Importação tardia: permite testar a lógica com uma GUI simulada
+        # e evita exigir uma sessão gráfica só para importar o módulo.
+        if enabled:
+            self._pyautogui = None
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def handle(self, event: GestureEvent | None) -> None:
+        if not self.enabled or event is None:
+            return
+        if self._pyautogui is None:
+            import pyautogui
+            pyautogui.FAILSAFE = True
+            pyautogui.PAUSE = 0.01
+            self._pyautogui = pyautogui
+
+        if event.gesture in {Gesture.MAXIMIZE, Gesture.RESTORE, Gesture.MINIMIZE, Gesture.SWIPE_LEFT, Gesture.SWIPE_RIGHT, Gesture.KEYBOARD_TOGGLE, Gesture.ZOOM_IN, Gesture.ZOOM_OUT, Gesture.UNDO, Gesture.CONFIRM, Gesture.VOICE_ACTIVATE}:
+            self.release()
+
+        if event.gesture is Gesture.PAUSE_TOGGLE:
+            self._paused = not self._paused
+            self.release()
+            return
+
+        if self._paused:
+            return
+
+        if event.gesture not in NON_CURSOR_GESTURES:
+            cursor_x, cursor_y = self._screen_position(event)
+            if self._last_screen_pos != (cursor_x, cursor_y):
+                self._pyautogui.moveTo(cursor_x, cursor_y, duration=0)
+                self._last_screen_pos = (cursor_x, cursor_y)
+
+        if event.gesture is Gesture.PINCH:
+            if not self._dragging:
+                self._pyautogui.mouseDown()
+                self._dragging = True
+            return
+
+        if self._dragging:
+            self._pyautogui.mouseUp()
+            self._dragging = False
+
+        if event.gesture is Gesture.CLICK_LEFT or event.gesture is Gesture.DWELL_CLICK:
+            self._pyautogui.click()
+        elif event.gesture is Gesture.CLICK_RIGHT:
+            self._pyautogui.click(button="right")
+        elif event.gesture is Gesture.SCROLL:
+            self._pyautogui.scroll((event.amount or self.scroll_amount) if event.amount > 0 else -(abs(event.amount) or self.scroll_amount))
+        elif event.gesture is Gesture.ZOOM_IN:
+            self._send_hotkey("ctrl", "+")
+        elif event.gesture is Gesture.ZOOM_OUT:
+            self._send_hotkey("ctrl", "-")
+        elif event.gesture is Gesture.PAGE_FORWARD:
+            self._send_hotkey("alt", "right")
+        elif event.gesture is Gesture.PAGE_BACK:
+            self._send_hotkey("alt", "left")
+        elif event.gesture is Gesture.UNDO:
+            self._send_hotkey("ctrl", "z")
+        elif event.gesture is Gesture.CONFIRM:
+            self._send_press("enter")
+        elif event.gesture is Gesture.VOICE_ACTIVATE:
+            self._trigger_voice()
+        elif event.gesture is Gesture.KEYBOARD_TOGGLE:
+            self.windows.toggle_virtual_keyboard()
+        elif event.gesture is Gesture.MAXIMIZE:
+            self.windows.maximize()
+        elif event.gesture is Gesture.RESTORE:
+            self.windows.restore()
+        elif event.gesture is Gesture.MINIMIZE:
+            self.windows.minimize()
+        elif event.gesture is Gesture.SWIPE_LEFT:
+            self.windows.workspace_prev()
+        elif event.gesture is Gesture.SWIPE_RIGHT:
+            self.windows.workspace_next()
+
+    def _send_hotkey(self, *keys: str) -> None:
+        if self._pyautogui is None:
+            return
+        self.windows.ensure_camera_unfocused()
+        self._pyautogui.hotkey(*keys)
+
+    def _send_press(self, key: str) -> None:
+        if self._pyautogui is None:
+            return
+        self.windows.ensure_camera_unfocused()
+        self._pyautogui.press(key)
+
+    def _trigger_voice(self) -> None:
+        if self.on_voice_activate is not None:
+            self.on_voice_activate()
+        else:
+            self._send_hotkey("win", "h")
+
+    def release(self) -> None:
+        if self.enabled and self._dragging and self._pyautogui:
+            self._pyautogui.mouseUp()
+        self._dragging = False
+
+    def _screen_position(self, event: GestureEvent) -> tuple[int, int]:
+        assert self._pyautogui is not None
+        width, height = self._pyautogui.size()
+        # Ganho maior: chega às bordas da tela sem precisar levantar o braço até o limite da câmera.
+        gain = max(1.0, min(2.2, float(self.cursor_gain)))
+        clamped_x = max(0.0, min(1.0, 0.5 + (event.cursor.x - 0.5) * gain))
+        clamped_y = max(0.0, min(1.0, 0.5 + (event.cursor.y - 0.5) * gain))
+        return min(width - 1, int(clamped_x * width)), min(height - 1, int(clamped_y * height))
