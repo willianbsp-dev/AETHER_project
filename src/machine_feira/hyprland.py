@@ -16,6 +16,19 @@ class HyprlandDispatcher:
     def __init__(self, hyprctl_bin: str = "hyprctl") -> None:
         self.hyprctl_bin = hyprctl_bin
         self._available: bool | None = None
+        self._target_window_address: str | None = None
+
+    @staticmethod
+    def _looks_like_terminal(client: dict) -> bool:
+        """Evita guardar o terminal como alvo de Ctrl+Z e outros atalhos."""
+        text = " ".join(
+            str(client.get(field, ""))
+            for field in ("class", "initialClass", "title", "initialTitle")
+        ).lower()
+        return any(
+            name in text
+            for name in ("kitty", "alacritty", "foot", "konsole", "wezterm", "xterm", "terminal")
+        )
 
     def is_available(self) -> bool:
         if self._available is None:
@@ -187,6 +200,41 @@ class HyprlandDispatcher:
             pass
         return None
 
+    def remember_current_target(self) -> None:
+        """Guarda a janela ativa antes da janela da câmera ser criada."""
+        active = self.get_active_window()
+        if active and not self._looks_like_terminal(active):
+            address = active.get("address")
+            if address:
+                self._target_window_address = str(address)
+                return
+
+        # Se o AETHER foi iniciado pelo terminal, mandar Ctrl+Z para ele o
+        # suspende via SIGTSTP. Procuramos uma janela gráfica mapeada, como o
+        # navegador, para ser o alvo dos gestos.
+        if not self.is_available():
+            return
+        try:
+            result = subprocess.run(
+                [self.hyprctl_bin, "-j", "clients"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=0.3,
+            )
+            clients = json.loads(result.stdout) if result.returncode == 0 else []
+            for client in clients:
+                address = client.get("address")
+                if address and client.get("mapped", True) and not self._looks_like_terminal(client):
+                    self._target_window_address = str(address)
+                    return
+        except (OSError, ValueError, TypeError):
+            return
+
+    def has_target_window(self) -> bool:
+        """Informa se existe uma janela segura para receber atalhos."""
+        return self._target_window_address is not None
+
     def ensure_camera_unfocused(self, camera_title_keyword: str = "Machine Feira") -> None:
         """Garante que ações sejam enviadas para uma janela real, nunca à câmera."""
         active = self.get_active_window()
@@ -198,6 +246,12 @@ class HyprlandDispatcher:
         ).lower()
         if camera_keyword not in active_text:
             return
+
+        # Primeiro retorna à janela que estava ativa quando o programa iniciou.
+        # Isso evita enviar Ctrl+/Alt ou cliques para a janela da câmera.
+        if self._target_window_address:
+            if self.dispatch_raw("focuswindow", f"address:{self._target_window_address}"):
+                return
 
         # O ciclo de foco pode voltar para a própria câmera. Primeiro procura
         # uma janela mapeada que não seja ela e foca pelo endereço Hyprland.

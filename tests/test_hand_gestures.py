@@ -83,6 +83,16 @@ def folded_other_fingers() -> dict:
     }
 
 
+def folded_ring_and_pinky() -> dict:
+    """Mantém indicador e médio levantados para o modo de comandos."""
+    return {
+        "ring": (0.55, 0.7),
+        "ring_pip": (0.55, 0.55),
+        "pinky": (0.6, 0.7),
+        "pinky_pip": (0.6, 0.55),
+    }
+
+
 def test_detects_pinch() -> None:
     recognizer = HandGestureRecognizer()
     # Polegar e indicador muito próximos
@@ -100,8 +110,11 @@ def test_rejects_incomplete_landmarks() -> None:
     assert recognizer.update([Landmark(0.5, 0.5)] * 20, now=1.0).gesture is Gesture.NONE
 
 
-def test_detects_scroll_with_only_index_extended() -> None:
+def test_detects_scroll_with_index_and_middle_extended() -> None:
     recognizer = HandGestureRecognizer()
+    resting_hand = create_hand(index=(0.45, 0.45), **folded_ring_and_pinky())
+    recognizer.update(resting_hand, now=0.0)
+    recognizer.update(resting_hand, now=1.05)
     # Mover o indicador para cima ao longo de frames
     detected = False
     for i in range(5):
@@ -110,9 +123,9 @@ def test_detects_scroll_with_only_index_extended() -> None:
             index=(0.45, y_pos),
             index_pip=(0.45, y_pos + 0.15),
             index_mcp=(0.45, y_pos + 0.28),
-            **folded_other_fingers(),
+            **folded_ring_and_pinky(),
         )
-        ev = recognizer.update(hand, now=1.0 + i * 0.05)
+        ev = recognizer.update(hand, now=1.10 + i * 0.05)
         if ev.gesture is Gesture.SCROLL:
             detected = True
             assert ev.amount > 0  # Movimento para cima -> scroll positivo
@@ -121,20 +134,67 @@ def test_detects_scroll_with_only_index_extended() -> None:
     assert detected
 
 
+def test_scroll_has_distinct_up_and_down_directions() -> None:
+    recognizer = HandGestureRecognizer()
+    resting_hand = create_hand(index=(0.45, 0.45), **folded_ring_and_pinky())
+    recognizer.update(resting_hand, now=0.0)
+    recognizer.update(resting_hand, now=0.1)
+
+    amounts: list[int] = []
+    for i, y_pos in enumerate((0.42, 0.39, 0.36, 0.33)):
+        hand = create_hand(
+            index=(0.45, y_pos),
+            index_pip=(0.45, y_pos + 0.15),
+            index_mcp=(0.45, y_pos + 0.28),
+            **folded_ring_and_pinky(),
+        )
+        event = recognizer.update(hand, now=0.2 + i * 0.08)
+        if event.gesture is Gesture.SCROLL:
+            amounts.append(event.amount)
+
+    for i, y_pos in enumerate((0.36, 0.39, 0.42, 0.45, 0.48)):
+        hand = create_hand(
+            index=(0.45, y_pos),
+            index_pip=(0.45, y_pos + 0.15),
+            index_mcp=(0.45, y_pos + 0.28),
+            **folded_ring_and_pinky(),
+        )
+        event = recognizer.update(hand, now=1.0 + i * 0.08)
+        if event.gesture is Gesture.SCROLL:
+            amounts.append(event.amount)
+
+    assert any(amount > 0 for amount in amounts)
+    assert any(amount < 0 for amount in amounts)
+
+
 def test_detects_dwell_click() -> None:
     recognizer = HandGestureRecognizer()
-    hand_pos = create_hand(index=(0.45, 0.35), **folded_other_fingers())
+    hand_pos = create_hand(index=(0.45, 0.35), **folded_ring_and_pinky())
 
-    # Quadro inicial
-    recognizer.update(hand_pos, now=1.0)
-    # 0.25s depois (progresso em ~50%)
-    ev_mid = recognizer.update(hand_pos, now=1.25)
-    assert ev_mid.gesture is Gesture.NONE
-    assert 0.55 <= ev_mid.dwell_progress <= 0.7
+    # Dois dedos levantados entram imediatamente no modo de comandos.
+    ev_mode = recognizer.update(hand_pos, now=1.0)
+    assert ev_mode.gesture is Gesture.NONE
+    assert ev_mode.dwell_progress == 0.0
+    assert ev_mode.gesture_mode
 
-    # 0.55s depois (deve disparar DWELL_CLICK)
-    ev_click = recognizer.update(hand_pos, now=1.55)
-    assert ev_click.gesture is Gesture.DWELL_CLICK
+
+def test_detects_air_click_in_mouse_mode() -> None:
+    recognizer = HandGestureRecognizer()
+    positions = (0.35, 0.48, 0.25)
+    events = []
+    for i, y_pos in enumerate(positions):
+        hand = create_hand(
+            index=(0.45, y_pos),
+            index_pip=(0.45, y_pos + 0.15),
+            index_mcp=(0.45, y_pos + 0.28),
+            **folded_other_fingers(),
+        )
+        events.append(recognizer.update(hand, now=1.0 + i * 0.05))
+
+    assert any(event.gesture is Gesture.DWELL_CLICK for event in events)
+    assert all(not event.gesture_mode for event in events)
+    click_event = next(event for event in events if event.gesture is Gesture.DWELL_CLICK)
+    assert not click_event.cursor_enabled
 
 
 def test_detects_thumbs_up_confirm() -> None:
@@ -357,6 +417,11 @@ def test_circle_in_hand_recognizer_triggers_page_forward() -> None:
     radius = 0.08
     steps = 20
 
+    # O círculo só é liberado após o indicador permanecer parado por 1 s.
+    resting_hand = create_hand(index=(center_x, center_y), **folded_ring_and_pinky())
+    recognizer.update(resting_hand, now=0.0)
+    recognizer.update(resting_hand, now=1.05)
+
     detected = False
     for i in range(steps):
         t = i / steps * 2 * math.pi
@@ -367,9 +432,9 @@ def test_circle_in_hand_recognizer_triggers_page_forward() -> None:
             index_mcp=(0.45, 0.65),
             index_pip=(0.45 + (x - center_x) * 0.4, 0.5 + (y - center_y) * 0.4),
             index=(x, y),
-            **folded_other_fingers(),
+            **folded_ring_and_pinky(),
         )
-        ev = recognizer.update(hand, now=1.0 + i * 0.04)
+        ev = recognizer.update(hand, now=1.10 + i * 0.04)
         if ev.gesture is Gesture.PAGE_FORWARD:
             detected = True
             break
@@ -377,20 +442,26 @@ def test_circle_in_hand_recognizer_triggers_page_forward() -> None:
     assert detected
 
 
-def test_detects_zoom_in_and_out() -> None:
+def test_detects_zoom_with_one_open_hand_and_one_dynamic_pinch() -> None:
     recognizer = HandGestureRecognizer()
-    # Pinça aberta (acima do limiar de arrasto) para não competir com PINCH
-    h1 = create_hand(thumb=(0.42, 0.45), index=(0.54, 0.45), **folded_other_fingers())
-    recognizer.update(h1, now=1.0)
 
+    open_hand = create_hand(
+        thumb=(0.25, 0.35),
+        index=(0.35, 0.15),
+        middle=(0.50, 0.12),
+        ring=(0.62, 0.20),
+        pinky=(0.70, 0.32),
+    )
+
+    # Mão em pinça começa mais fechada e se abre -> ZOOM_IN.
     detected_in = False
     for i in range(6):
-        h = create_hand(
-            thumb=(0.42 - i * 0.015, 0.45),
-            index=(0.54 + i * 0.015, 0.45),
+        pinch_hand = create_hand(
+            thumb=(0.42 - i * 0.012, 0.45),
+            index=(0.46 + i * 0.012, 0.45),
             **folded_other_fingers(),
         )
-        ev = recognizer.update(h, now=1.05 + i * 0.05)
+        ev = recognizer.update([open_hand, pinch_hand], now=1.0 + i * 0.05)
         if ev.gesture is Gesture.ZOOM_IN:
             detected_in = True
             break
@@ -399,22 +470,33 @@ def test_detects_zoom_in_and_out() -> None:
 
     recognizer.update([], now=1.5)
 
-    h_start = create_hand(thumb=(0.38, 0.45), index=(0.58, 0.45), **folded_other_fingers())
-    recognizer.update(h_start, now=2.0)
-
+    # Mão em pinça começa mais aberta e fecha -> ZOOM_OUT.
     detected_out = False
     for i in range(6):
-        h = create_hand(
-            thumb=(0.38 + i * 0.015, 0.45),
-            index=(0.58 - i * 0.015, 0.45),
+        pinch_hand = create_hand(
+            thumb=(0.38 + i * 0.012, 0.45),
+            index=(0.58 - i * 0.012, 0.45),
             **folded_other_fingers(),
         )
-        ev = recognizer.update(h, now=2.05 + i * 0.05)
+        ev = recognizer.update([open_hand, pinch_hand], now=2.0 + i * 0.05)
         if ev.gesture is Gesture.ZOOM_OUT:
             detected_out = True
             break
 
     assert detected_out
+
+    # Uma única mão, mesmo fazendo a mesma abertura dinâmica da pinça, nunca deve gerar zoom.
+    recognizer.update([], now=3.0)
+    one_hand_events = []
+    for i in range(6):
+        hand = create_hand(
+            thumb=(0.42 - i * 0.015, 0.45),
+            index=(0.54 + i * 0.015, 0.45),
+            **folded_other_fingers(),
+        )
+        one_hand_events.append(recognizer.update(hand, now=3.05 + i * 0.05).gesture)
+    assert Gesture.ZOOM_IN not in one_hand_events
+    assert Gesture.ZOOM_OUT not in one_hand_events
 
 
 def test_closed_pinch_is_drag_not_zoom() -> None:

@@ -43,3 +43,9 @@ class GestureEvent:
     amount: int = 0
     dwell_progress: float = 0.0
     trail: list[Point] = field(default_factory=list)
+    # True somente quando o reconhecedor confirmou: indicador estendido e os
+    # outros três dedos recolhidos. A automação usa esta marca para impedir
+    # que uma palma, pinça ou gesto de zoom mova o ponteiro por acidente.
+    cursor_enabled: bool = False
+    # False = modo mouse; True = bolinha completa e gestos discretos liberados.
+    gesture_mode: bool = False

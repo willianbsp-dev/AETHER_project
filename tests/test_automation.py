@@ -96,12 +96,12 @@ def _setup_automation(hyprland_available: bool = True) -> tuple[DesktopAutomatio
 
 def test_cursor_mapping() -> None:
     automation, fake_gui, _ = _setup_automation()
-    # O primeiro quadro cria a âncora; o segundo desloca o ponteiro pela
-    # diferença do dedo, sem saltar para uma coordenada absoluta.
-    automation.handle(GestureEvent(Gesture.NONE, Point(0.5, 0.5)))
-    assert fake_gui.moved_to is None
-    automation.handle(GestureEvent(Gesture.NONE, Point(0.6, 0.6)))
-    assert fake_gui.moved_to == (635, 317)
+    # A posição do indicador já determina diretamente a posição da tela.
+    automation.handle(GestureEvent(Gesture.NONE, Point(0.5, 0.5), cursor_enabled=True))
+    assert fake_gui.moved_to == (499, 249)
+    automation.handle(GestureEvent(Gesture.NONE, Point(0.6, 0.6), cursor_enabled=True))
+    # A segunda posição é suavizada para não saltar com o tremor da câmera.
+    assert fake_gui.moved_to == (521, 260)
 
 
 def test_drag_and_release() -> None:
@@ -115,6 +115,20 @@ def test_drag_and_release() -> None:
     automation.handle(GestureEvent(Gesture.NONE, Point(0.4, 0.4)))
     assert fake_gui.mouse_up_called
     assert not automation._dragging
+
+
+def test_only_index_enabled_event_moves_cursor() -> None:
+    automation, fake_gui, _ = _setup_automation()
+
+    # Uma palma/ação discreta sem a marca do indicador isolado não pode mover
+    # o ponteiro, mesmo que carregue uma coordenada de cursor.
+    automation.handle(GestureEvent(Gesture.NONE, Point(0.2, 0.2)))
+    automation.handle(GestureEvent(Gesture.NONE, Point(0.8, 0.8)))
+    assert fake_gui.moved_to is None
+
+    automation.handle(GestureEvent(Gesture.NONE, Point(0.2, 0.2), cursor_enabled=True))
+    automation.handle(GestureEvent(Gesture.NONE, Point(0.3, 0.3), cursor_enabled=True))
+    assert fake_gui.moved_to is not None
 
 
 def test_navigation_and_clicks() -> None:
@@ -139,7 +153,7 @@ def test_navigation_and_clicks() -> None:
     assert ("alt", "right") in fake_gui.hotkeys
 
     automation.handle(GestureEvent(Gesture.PAGE_BACK, Point(0.5, 0.5)))
-    assert ("ctrl", "z") in fake_gui.hotkeys
+    assert ("alt", "left") in fake_gui.hotkeys
 
     automation.handle(GestureEvent(Gesture.CONFIRM, Point(0.5, 0.5)))
     assert "enter" in fake_gui.pressed

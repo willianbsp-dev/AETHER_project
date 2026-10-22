@@ -44,20 +44,19 @@ class GestureConfig:
     # Zoom
     zoom_step_distance: float = 0.035
     max_zoom_interaction_dist: float = 0.28
-    # Limiares relativos ao tamanho da palma (reduzem variação por distância da câmera)
-    pinch_ratio_start: float = 0.38
-    pinch_ratio_release: float = 0.55
-    zoom_step_ratio: float = 0.20
-    max_zoom_ratio: float = 1.80
-    # Classificação geométrica dos dedos
-    finger_extension_angle: float = 150.0
-    finger_extension_ratio: float = 1.02
     # Dwell Click (raio estável e tempo)
     stable_distance: float = 0.040
-    dwell_seconds: float = 0.40
+    # Um clique só nasce depois de um segundo completamente parado. O cursor
+    # continua sendo atualizado independentemente deste temporizador.
+    dwell_seconds: float = 1.0
     double_click_window_seconds: float = 1.20
-    # Scroll (acumulador e limiar)
-    scroll_threshold: float = 0.015
+    # Movimento curto para baixo e retorno: clique no ar no modo mouse.
+    air_click_threshold: float = 0.020
+    air_click_window_seconds: float = 0.35
+    air_click_cooldown_seconds: float = 0.45
+    # Scroll: deslocamento maior e intervalo entre passos reduzem tremor.
+    scroll_threshold: float = 0.025
+    scroll_cooldown_seconds: float = 0.07
     # Swipes de palma aberta
     swipe_threshold: float = 0.065
     swipe_window_seconds: float = 0.35
@@ -72,6 +71,7 @@ class GestureConfig:
     two_hand_window_seconds: float = 0.45
     two_hand_vertical_threshold: float = 0.055
     typing_hold_seconds: float = 0.80
+    typing_motion_threshold: float = 0.018
     fist_hold_seconds: float = 0.80
     calibration_frames: int = 0
     # Cooldown para ações discretas
@@ -104,22 +104,25 @@ class HandGestureRecognizer:
         self._pinch_filter = OneEuroFilter(min_cutoff=1.5, beta=0.01)
         self._two_hand_filter = OneEuroFilter(min_cutoff=1.0, beta=0.005)
 
-        # Estado de pinça / arrasto (histerese). Zoom só é armado depois
-        # que uma pinça estável foi observada; isso evita que uma pinça comum
-        # seja interpretada como zoom.
+        # Estado de pinça / arrasto (histerese)
         self._is_pinching = False
-        self._pinch_candidate_since: float | None = None
-        self._pinch_stable_frames = 0
 
         # Estado de Dwell Click
         self._dwell_anchor: Point | None = None
         self._dwell_start_time: float | None = None
         self._dwell_fired = False
+        # O modo mouse é o estado seguro. Círculo e scroll só são avaliados
+        # depois que o indicador permanece parado e a bolinha completa.
+        self._gesture_mode = False
+        self._air_click_start: Point | None = None
+        self._air_click_started_at: float | None = None
+        self._air_click_cooldown_until = -999.0
+        self._air_click_previous_raw: Point | None = None
 
         # Estado de Scroll e Zoom
         self._scroll_accumulator = 0.0
+        self._last_scroll_time = -999.0
         self._zoom_anchor_dist: float | None = None
-        self._zoom_active = False
         self._previous_filtered_index: Point | None = None
         self._last_click_time: float | None = None
 
@@ -128,8 +131,9 @@ class HandGestureRecognizer:
         self._two_hand_history: Deque[_TimedVal] = deque(maxlen=30)
         self._last_two_hand_seen = -999.0
         self._two_hand_mid_history: Deque[_TimedVal] = deque(maxlen=30)
-        self._typing_start_time: float | None = None
         self._typing_fired = False
+        self._typing_motion_history: Deque[_TimedVal] = deque(maxlen=20)
+        self._typing_last_finger_y: float | None = None
         self._fist_start_time: float | None = None
         self._fist_fired = False
         self._calibration_count = 0
@@ -140,13 +144,15 @@ class HandGestureRecognizer:
         self._thumbs_up_counter = 0
         self._ok_fired = False
         self._thumbs_up_fired = False
-        self._last_action_times: dict[Gesture, float] = {}
+        self._last_discrete_action = -999.0
         self._last_swipe_time = -999.0
         self._last_swipe_gesture: Gesture | None = None
         self._swipe_opposite_lockout_until = -999.0
         self._last_toggle_minimized_time = -999.0
         self._last_minimize_time = -999.0
         self._vertical_opposite_lockout_until = -999.0
+        # Evita que a mão em pinça do zoom seja reinterpretada como arrasto.
+        self._two_hand_zoom_active = False
 
     def update(
         self,
@@ -190,16 +196,24 @@ class HandGestureRecognizer:
             keyboard_event = self._check_typing_position(hands_list[0], hands_list[1], timestamp)
             if keyboard_event:
                 return keyboard_event
+
+            # Zoom é uma interação combinada: uma mão permanece aberta e a
+            # outra faz a pinça dinâmica. A distância entre polegar e indicador
+            # da mão em pinça determina o zoom. Isso impede que uma única mão
+            # dispare ZOOM_IN/ZOOM_OUT ou que uma pinça simples vire zoom.
+            zoom_event = self._check_two_hand_zoom(hands_list[0], hands_list[1], timestamp)
+            if zoom_event is not None:
+                return zoom_event
+
             two_hand_event = self._check_two_hand_gestures(hands_list[0], hands_list[1], timestamp)
             if two_hand_event:
                 return two_hand_event
         else:
+            # Zoom só pode existir com a combinação de duas mãos.
+            self._zoom_anchor_dist = None
             if timestamp - self._last_two_hand_seen > 0.25:
                 self._two_hand_history.clear()
-                self._two_hand_mid_history.clear()
                 self._two_hand_filter.reset()
-                self._typing_start_time = None
-                self._typing_fired = False
 
         # 2. SELEÇÃO DA MÃO ATIVA (Mão esquerda ou direita com base no score de intenção)
         if has_multiple_hands:
@@ -239,7 +253,7 @@ class HandGestureRecognizer:
             return 95.0
 
         # 2. Pinça ativa (Arrastar / Zoom)
-        if pinch_dist <= self._effective_pinch_start(landmarks) * 1.15:
+        if pinch_dist <= self.config.pinch_distance_start * 1.15:
             return 90.0
 
         # 3. Indicador estendido isolado (Mira, clique, scroll, círculos)
@@ -253,6 +267,39 @@ class HandGestureRecognizer:
 
         return 10.0
 
+    def _check_two_hand_zoom(
+        self, hand1: Sequence[object], hand2: Sequence[object], now: float
+    ) -> GestureEvent | None:
+        """Detecta zoom somente com uma palma aberta e a outra mão em pinça dinâmica."""
+        open1 = self._is_open_palm(hand1)
+        open2 = self._is_open_palm(hand2)
+
+        # Exige exatamente uma mão aberta e uma mão responsável pela pinça.
+        if open1 == open2:
+            self._zoom_anchor_dist = None
+            self._two_hand_zoom_active = False
+            return None
+
+        pinch_hand = hand2 if open1 else hand1
+        index = self._point(pinch_hand[INDEX_TIP])
+        thumb = self._point(pinch_hand[THUMB_TIP])
+        pinch_dist = self._distance(index, thumb)
+
+        if pinch_dist > self.config.max_zoom_interaction_dist:
+            self._zoom_anchor_dist = None
+            self._two_hand_zoom_active = False
+            return None
+
+        # Enquanto a combinação de zoom está ativa, não deixe a pinça da mão
+        # ativa cair no gesto PINCH de arrastar janela.
+        self._reset_dwell()
+        self._circle_tracker.clear()
+        self._is_pinching = False
+        self._two_hand_zoom_active = True
+        # Mesmo sem atingir o próximo passo de zoom, consumimos a combinação
+        # inteira para que ela nunca caia no gesto PINCH de arrastar.
+        return self._check_zoom(index, pinch_dist, now) or GestureEvent(Gesture.NONE, index)
+
     def _check_two_hand_gestures(
         self, hand1: Sequence[object], hand2: Sequence[object], now: float
     ) -> GestureEvent | None:
@@ -264,62 +311,73 @@ class HandGestureRecognizer:
 
         while self._two_hand_history and (now - self._two_hand_history[0].time > self.config.two_hand_window_seconds):
             self._two_hand_history.popleft()
+
         self._two_hand_history.append(_TimedVal(dist, now))
-        while self._two_hand_mid_history and (now - self._two_hand_mid_history[0].time > self.config.two_hand_window_seconds):
-            self._two_hand_mid_history.popleft()
         self._two_hand_mid_history.append(_TimedVal(mid_point.y, now))
 
-        # Este histórico é exclusivo das mãos; o teclado virtual não usa mais
-        # o primeiro timestamp do histórico de movimento.
-        if len(self._two_hand_history) >= 4:
+        if len(self._two_hand_history) >= 4 and self._can_fire(now):
             start_dist = self._two_hand_history[0].val
             delta_dist = dist - start_dist
-            # Usa o deslocamento vertical medido dentro da mesma janela.
-            first_y = self._two_hand_mid_history[0].val if self._two_hand_mid_history else mid_point.y
-            delta_y = mid_point.y - first_y
+            start_y = self._two_hand_mid_history[0].val
+            delta_y = mid_point.y - start_y
 
+            # Juntas -> sobem e afastam: MAXIMIZE.
             if delta_dist >= self.config.two_hand_spread_threshold and (
                 delta_y <= -self.config.two_hand_vertical_threshold or abs(delta_y) < 0.01
-            ) and self._can_fire(Gesture.MAXIMIZE, now):
-                self._mark_fired(Gesture.MAXIMIZE, now)
+            ):
+                self._last_discrete_action = now
                 self._two_hand_history.clear()
                 self._two_hand_mid_history.clear()
                 return GestureEvent(Gesture.MAXIMIZE, mid_point)
-
-            if delta_dist <= -self.config.two_hand_spread_threshold and (
+            # Afastadas -> descem e aproximam: MINIMIZE.
+            elif delta_dist <= -self.config.two_hand_spread_threshold and (
                 delta_y >= self.config.two_hand_vertical_threshold or abs(delta_y) < 0.01
             ):
-                gesture = Gesture.MINIMIZE if delta_y >= self.config.two_hand_vertical_threshold else Gesture.RESTORE
-                if self._can_fire(gesture, now):
-                    self._mark_fired(gesture, now)
-                    self._two_hand_history.clear()
-                    self._two_hand_mid_history.clear()
-                    return GestureEvent(gesture, mid_point)
+                self._last_discrete_action = now
+                self._two_hand_history.clear()
+                self._two_hand_mid_history.clear()
+                return GestureEvent(
+                    Gesture.MINIMIZE if delta_y >= self.config.two_hand_vertical_threshold else Gesture.RESTORE,
+                    mid_point,
+                )
 
         return None
 
     def _check_typing_position(
         self, hand1: Sequence[object], hand2: Sequence[object], now: float
     ) -> GestureEvent | None:
-        """Detecta duas palmas abertas mantidas na posição de digitação."""
-        is_open = self._is_open_palm(hand1) and self._is_open_palm(hand2)
-        y = (self._point(hand1[WRIST]).y + self._point(hand2[WRIST]).y) / 2
+        """Detecta mãos baixas fazendo movimento de dedos de digitação.
 
-        # A postura precisa permanecer válida continuamente; sair dela reseta
-        # o cronômetro em vez de reaproveitar histórico de outro gesto.
-        if not is_open or y < 0.45:
-            self._typing_start_time = None
+        Duas palmas abertas paradas são deliberadamente rejeitadas: elas são
+        usadas para outros gestos de duas mãos, não para abrir o teclado.
+        """
+        if self._is_open_palm(hand1) or self._is_open_palm(hand2):
             self._typing_fired = False
+            self._typing_motion_history.clear()
+            self._typing_last_finger_y = None
+            return None
+        y = (self._point(hand1[WRIST]).y + self._point(hand2[WRIST]).y) / 2
+        if y < 0.45:
+            self._typing_fired = False
+            self._typing_motion_history.clear()
+            self._typing_last_finger_y = None
             return None
 
-        if self._typing_start_time is None:
-            self._typing_start_time = now
-            return None
+        tips = (INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)
+        finger_y = sum(
+            self._point(hand[idx]).y for hand in (hand1, hand2) for idx in tips
+        ) / 8.0
+        if self._typing_last_finger_y is not None:
+            movement = abs(finger_y - self._typing_last_finger_y)
+            if movement >= self.config.typing_motion_threshold:
+                self._typing_motion_history.append(_TimedVal(finger_y, now))
+        self._typing_last_finger_y = finger_y
 
-        elapsed = now - self._typing_start_time
+        if not self._typing_motion_history:
+            return None
+        elapsed = now - self._typing_motion_history[0].time
         if elapsed >= self.config.typing_hold_seconds and not self._typing_fired:
             self._typing_fired = True
-            self._mark_fired(Gesture.VIRTUAL_KEYBOARD, now)
             return GestureEvent(Gesture.VIRTUAL_KEYBOARD, Point(0.5, y))
         return None
 
@@ -330,125 +388,33 @@ class HandGestureRecognizer:
         raw_index = self._point(landmarks[INDEX_TIP])
         raw_thumb = self._point(landmarks[THUMB_TIP])
 
+        # Se houver troca brusca de posição (ex: troca de mão ativa), reseta o filtro para evitar arrasto
         if self._previous_filtered_index is not None:
             if self._distance(raw_index, self._previous_filtered_index) > 0.30:
                 self._cursor_filter.reset()
                 self._reset_dwell()
 
+        # Suaviza o cursor para eliminar tremores de mira
         index = self._cursor_filter.filter(raw_index, now)
         raw_pinch_dist = self._distance(raw_index, raw_thumb)
-        # A decisão PINCH/ZOOM usa a distância instantânea. O filtro anterior
-        # introduzia atraso suficiente para perder pinças curtas nos testes e
-        # também atrasava a transição PINCH -> ZOOM.
-        pinch_dist = raw_pinch_dist
-        self._pinch_filter.filter(raw_pinch_dist, now)
+        pinch_dist = self._pinch_filter.filter(raw_pinch_dist, now)
 
         index_ext = self._is_finger_extended(landmarks, INDEX_TIP, INDEX_PIP, INDEX_MCP)
         middle_ext = self._is_finger_extended(landmarks, MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP)
         ring_ext = self._is_finger_extended(landmarks, RING_TIP, RING_PIP, RING_MCP)
         pinky_ext = self._is_finger_extended(landmarks, PINKY_TIP, PINKY_PIP, PINKY_MCP)
 
-        # ---------------------------------------------------------------
-        # PINCH: prioridade máxima entre gestos de uma mão.
-        # Uma pinça fechada não pode virar JOINHA/PUNHO por acidente.
-        # Mantemos OK acima da pinça apenas quando há dedos adicionais
-        # claramente estendidos.
-        # ---------------------------------------------------------------
-        pinch_start = self._effective_pinch_start(landmarks)
-        pinch_release = self._effective_pinch_release(landmarks)
-        zoom_max = self._effective_zoom_max(landmarks)
-
-        closed_pinch = (
-            pinch_dist <= pinch_start
-            and not middle_ext
-            and not ring_ext
-            and not pinky_ext
-        )
-
-        if closed_pinch:
-            self._is_pinching = True
-            self._pinch_candidate_since = now
-            self._pinch_stable_frames += 1
-            self._fist_start_time = None
-            self._fist_fired = False
-            self._reset_dwell()
-            self._circle_tracker.clear()
-            # Mantém a distância da pinça fechada como âncora. Ao abrir a
-            # pinça, a própria abertura pode ser o primeiro passo de ZOOM.
-            # A postura fechada continua retornando exclusivamente PINCH.
-            self._zoom_anchor_dist = pinch_dist
-            self._zoom_anchor_ratio = None
-            self._zoom_active = False
-            self._remember(index)
-            return GestureEvent(Gesture.PINCH, index)
-
-        just_released_pinch = False
-        if self._is_pinching:
-            # A pinça só termina quando a abertura ultrapassa a histerese.
-            # A partir daí o próprio frame de abertura pode produzir ZOOM.
-            if pinch_dist <= pinch_release:
-                self._reset_dwell()
-                self._remember(index)
-                return GestureEvent(Gesture.PINCH, index)
-            self._is_pinching = False
-            self._pinch_candidate_since = None
-            self._pinch_stable_frames = 0
-            just_released_pinch = True
-            # Não apaga _zoom_anchor_dist aqui: o frame de abertura deve
-            # ser comparado diretamente com a distância da pinça fechada.
-
-        # ---------------------------------------------------------------
-        # ZOOM ABERTO
-        # Uma "pinça aberta" usada para zoom pode ter a mesma geometria
-        # básica de um joinha (os outros dedos estão dobrados). O teste e
-        # o uso do gesto definem a distância polegar-indicador como a pista
-        # principal: dentro do limite de interação, o zoom tem prioridade.
-        # Uma distância maior (como no joinha) continua indo para CONFIRM.
-        # ---------------------------------------------------------------
-        zoom_posture_pre = (
-            not index_ext
-            and not middle_ext
-            and not ring_ext
-            and not pinky_ext
-            and pinch_dist > pinch_release
-            and pinch_dist <= self.config.max_zoom_interaction_dist
-        )
-        if zoom_posture_pre:
-            if self._zoom_anchor_dist is None:
-                self._zoom_anchor_dist = pinch_dist
-                self._zoom_anchor_ratio = None
-                self._zoom_active = False
-
-            zoom_event = self._check_zoom(index, pinch_dist, now, landmarks)
-            if zoom_event:
-                self._reset_dwell()
-                self._circle_tracker.clear()
-                self._zoom_active = True
-                return zoom_event
-        else:
-            # Uma postura que não pode ser zoom encerra a âncora, exceto
-            # durante a transição recém-liberada de PINCH.
-            if not just_released_pinch:
-                self._zoom_anchor_dist = None
-                self._zoom_anchor_ratio = None
-                self._zoom_active = False
-
-        # ---------------------------------------------------------------
-        # JOINHA
-        # ---------------------------------------------------------------
+        # 1. Gesto: JOINHA 👍 (Confirmar / Enter)
         if self._is_thumbs_up(landmarks, index_ext, middle_ext, ring_ext, pinky_ext):
             self._thumbs_up_counter += 1
             self._ok_counter = 0
             self._ok_fired = False
             self._reset_dwell()
             self._circle_tracker.clear()
+            self._is_pinching = False
 
-            if (
-                self._thumbs_up_counter >= 2
-                and not self._thumbs_up_fired
-                and self._can_fire(Gesture.CONFIRM, now)
-            ):
-                self._mark_fired(Gesture.CONFIRM, now)
+            if self._thumbs_up_counter >= 2 and not self._thumbs_up_fired and self._can_fire(now):
+                self._last_discrete_action = now
                 self._thumbs_up_fired = True
                 return GestureEvent(Gesture.CONFIRM, raw_thumb)
             return GestureEvent(Gesture.NONE, raw_thumb)
@@ -456,22 +422,17 @@ class HandGestureRecognizer:
             self._thumbs_up_counter = 0
             self._thumbs_up_fired = False
 
-        # ---------------------------------------------------------------
-        # OK
-        # ---------------------------------------------------------------
+        # 2. Gesto: VOZ (Sinal de OK 👌)
         if self._is_ok_sign(landmarks, pinch_dist, middle_ext, ring_ext, pinky_ext):
             self._ok_counter += 1
             self._thumbs_up_counter = 0
             self._thumbs_up_fired = False
             self._reset_dwell()
             self._circle_tracker.clear()
+            self._is_pinching = False
 
-            if (
-                self._ok_counter >= 2
-                and not self._ok_fired
-                and self._can_fire(Gesture.VOICE_ACTIVATE, now)
-            ):
-                self._mark_fired(Gesture.VOICE_ACTIVATE, now)
+            if self._ok_counter >= 2 and not self._ok_fired and self._can_fire(now):
+                self._last_discrete_action = now
                 self._ok_fired = True
                 return GestureEvent(Gesture.VOICE_ACTIVATE, index)
             return GestureEvent(Gesture.NONE, index)
@@ -479,27 +440,18 @@ class HandGestureRecognizer:
             self._ok_counter = 0
             self._ok_fired = False
 
-        # O zoom aberto já foi processado antes de JOINHA para evitar que
-        # uma pinça aberta seja confundida com CONFIRM.
-        # ---------------------------------------------------------------
-        # PUNHO
-        # ---------------------------------------------------------------
+        # 3. Punho fechado mantido: alterna pausa/retomada.
         if self._is_closed_fist(landmarks, index_ext, middle_ext, ring_ext, pinky_ext):
             if self._fist_start_time is None:
                 self._fist_start_time = now
-            if (
-                not self._fist_fired
-                and now - self._fist_start_time >= self.config.fist_hold_seconds
-            ):
+            if not self._fist_fired and now - self._fist_start_time >= self.config.fist_hold_seconds:
                 self._fist_fired = True
                 return GestureEvent(Gesture.PAUSE_TOGGLE, wrist)
             return GestureEvent(Gesture.NONE, wrist)
         self._fist_start_time = None
         self._fist_fired = False
 
-        # ---------------------------------------------------------------
-        # PALMA / SWIPE
-        # ---------------------------------------------------------------
+        # 4. Gesto: PALMA ABERTA (Trocar Workspace por Swipe)
         open_fingers = sum([index_ext, middle_ext, ring_ext, pinky_ext])
         is_open_palm = open_fingers >= 3
         if is_open_palm:
@@ -508,54 +460,102 @@ class HandGestureRecognizer:
                 if palm_event:
                     self._reset_dwell()
                     self._circle_tracker.clear()
+                    self._is_pinching = False
                     return palm_event
-        elif self._palm_history and (now - self._palm_history[-1].time > 0.10):
-            self._palm_history.clear()
+        else:
+            if self._palm_history and (now - self._palm_history[-1].time > 0.10):
+                self._palm_history.clear()
 
-        # ---------------------------------------------------------------
-        # INDICADOR: círculo, scroll ou dwell
-        # ---------------------------------------------------------------
+        # 5. Gesto: PINÇA COM HISTERESE (Mover Janela / Arrastar)
+        # Palma aberta tem prioridade: uma mão totalmente aberta nunca vira
+        # pinça só porque a geometria do polegar passou perto do indicador.
+        if is_open_palm:
+            self._is_pinching = False
+        elif not self._is_pinching and pinch_dist <= self.config.pinch_distance_start:
+            self._is_pinching = True
+        elif self._is_pinching and pinch_dist > self.config.pinch_distance_release:
+            self._is_pinching = False
+
+        if self._is_pinching:
+            self._reset_dwell()
+            self._circle_tracker.clear()
+            self._remember(index)
+            return GestureEvent(Gesture.PINCH, index)
+
+        # 6. Indicador sozinho: exclusivamente mouse e clique no ar.
         if index_ext and not middle_ext and not ring_ext and not pinky_ext:
-            # Círculo e zoom são mutuamente exclusivos. Ao entrar no modo
-            # indicador isolado, a âncora de zoom deixa de ser válida.
-            self._zoom_anchor_dist = None
-            self._zoom_anchor_ratio = None
-            self._zoom_active = False
+            self._gesture_mode = False
+            self._reset_dwell()
+            self._circle_tracker.clear()
+            # O movimento curto usa o landmark bruto, antes do filtro que
+            # suaviza o cursor e poderia apagar o clique no ar.
+            air_click = self._check_air_click(raw_index, now)
+            self._remember(index)
+            if air_click:
+                return air_click
+            # Durante a tentativa de clique, congela o cursor na posição que
+            # o usuário escolheu. O movimento de pressionar/soltar não pode
+            # deslocar o alvo antes de o botão ser acionado.
+            if self._air_click_start is not None:
+                return GestureEvent(Gesture.NONE, index, cursor_enabled=False, gesture_mode=False)
+            return GestureEvent(Gesture.NONE, index, cursor_enabled=True, gesture_mode=False)
+
+        # 7. Indicador + médio levantados: muda imediatamente para laranja e
+        # libera círculos/scroll. Não há mais espera para carregar a bolinha.
+        if index_ext and middle_ext and not ring_ext and not pinky_ext:
+            if not self._gesture_mode:
+                self._gesture_mode = True
+                self._circle_tracker.clear()
+                self._reset_dwell()
+                self._remember(index)
+                return GestureEvent(
+                    Gesture.NONE,
+                    index,
+                    dwell_progress=0.0,
+                    cursor_enabled=False,
+                    gesture_mode=True,
+                )
+
+            # Modo gesto: o mouse fica parado e apenas os comandos são avaliados.
             self._circle_tracker.add_point(index, now)
             circle_gesture = self._circle_tracker.evaluate(now)
             if circle_gesture is not Gesture.NONE:
                 self._reset_dwell()
-                self._mark_fired(circle_gesture, now)
+                self._last_discrete_action = now
                 self._remember(index)
+                # O círculo anti-horário volta a ser navegação. Ele nunca
+                # envia Ctrl+Z, pois isso pode suspender o terminal do AETHER.
                 return GestureEvent(
-                    circle_gesture, index, trail=self._circle_tracker.get_trail()
+                    circle_gesture,
+                    index,
+                    trail=self._circle_tracker.get_trail(),
+                    cursor_enabled=False,
+                    gesture_mode=True,
                 )
 
-            scroll_event = self._check_scroll(index)
+            scroll_event = self._check_scroll(index, now)
             if scroll_event:
                 self._reset_dwell()
                 self._remember(index)
-                return scroll_event
+                return GestureEvent(
+                    scroll_event.gesture,
+                    scroll_event.cursor,
+                    amount=scroll_event.amount,
+                    cursor_enabled=False,
+                    gesture_mode=True,
+                )
 
-            dwell_event, dwell_prog = self._check_dwell(index, now)
             self._remember(index)
-            if dwell_event:
-                if (
-                    self._last_click_time is not None
-                    and now - self._last_click_time <= self.config.double_click_window_seconds
-                ):
-                    self._last_click_time = None
-                    return GestureEvent(Gesture.DOUBLE_CLICK, index, dwell_progress=1.0)
-                self._last_click_time = now
-                return dwell_event
-
             return GestureEvent(
                 Gesture.NONE,
                 index,
-                dwell_progress=dwell_prog,
+                dwell_progress=0.0,
                 trail=self._circle_tracker.get_trail(),
+                cursor_enabled=False,
+                gesture_mode=True,
             )
 
+        # Nenhum gesto específico ativo
         self._remember(index)
         return GestureEvent(Gesture.NONE, index)
 
@@ -657,8 +657,8 @@ class HandGestureRecognizer:
                 if self._last_swipe_gesture == Gesture.TOGGLE_MINIMIZED and now < self._vertical_opposite_lockout_until:
                     return None
 
-                if now - self._last_minimize_time >= self.config.minimize_cooldown_seconds and self._can_fire(Gesture.MINIMIZE, now):
-                    self._mark_fired(Gesture.MINIMIZE, now)
+                if now - self._last_minimize_time >= self.config.minimize_cooldown_seconds and self._can_fire(now):
+                    self._last_discrete_action = now
                     self._last_swipe_time = now
                     self._last_minimize_time = now
                     self._last_swipe_gesture = Gesture.MINIMIZE
@@ -672,8 +672,8 @@ class HandGestureRecognizer:
                 if self._last_swipe_gesture == Gesture.MINIMIZE and now < self._vertical_opposite_lockout_until:
                     return None
 
-                if now - self._last_toggle_minimized_time >= self.config.toggle_minimized_cooldown_seconds and self._can_fire(Gesture.TOGGLE_MINIMIZED, now):
-                    self._mark_fired(Gesture.TOGGLE_MINIMIZED, now)
+                if now - self._last_toggle_minimized_time >= self.config.toggle_minimized_cooldown_seconds and self._can_fire(now):
+                    self._last_discrete_action = now
                     self._last_swipe_time = now
                     self._last_toggle_minimized_time = now
                     self._last_swipe_gesture = Gesture.TOGGLE_MINIMIZED
@@ -689,7 +689,7 @@ class HandGestureRecognizer:
 
                 cooldown = self.config.swipe_same_cooldown_seconds if self._last_swipe_gesture == Gesture.SWIPE_LEFT else 0.40
                 if now - self._last_swipe_time >= cooldown:
-                    self._mark_fired(Gesture.SWIPE_LEFT, now)
+                    self._last_discrete_action = now
                     self._last_swipe_time = now
                     self._last_swipe_gesture = Gesture.SWIPE_LEFT
                     self._swipe_opposite_lockout_until = now + self.config.swipe_opposite_lockout_seconds
@@ -704,7 +704,7 @@ class HandGestureRecognizer:
 
                 cooldown = self.config.swipe_same_cooldown_seconds if self._last_swipe_gesture == Gesture.SWIPE_RIGHT else 0.40
                 if now - self._last_swipe_time >= cooldown:
-                    self._mark_fired(Gesture.SWIPE_RIGHT, now)
+                    self._last_discrete_action = now
                     self._last_swipe_time = now
                     self._last_swipe_gesture = Gesture.SWIPE_RIGHT
                     self._swipe_opposite_lockout_until = now + self.config.swipe_opposite_lockout_seconds
@@ -713,57 +713,39 @@ class HandGestureRecognizer:
 
         return None
 
-    def _check_zoom(
-        self, cursor: Point, pinch_dist: float, now: float, landmarks: Sequence[object]
-    ) -> GestureEvent | None:
-        """Detecta zoom por variação absoluta ou relativa da abertura da pinça.
-
-        A distância absoluta mantém um limiar previsível para pequenas mãos/testes,
-        enquanto a medida relativa ajuda quando a mão muda de distância da câmera.
-        """
-        scale = max(self._hand_scale(landmarks), 1e-4)
-        normalized = pinch_dist / scale
-
+    def _check_zoom(self, cursor: Point, pinch_dist: float, now: float) -> GestureEvent | None:
+        """Zoom estável por passos acumulados."""
         if self._zoom_anchor_dist is None:
-            # O estado guarda a distância bruta; a versão normalizada é calculada
-            # contra a escala atual para não misturar unidades.
             self._zoom_anchor_dist = pinch_dist
             return None
 
-        absolute_delta = pinch_dist - self._zoom_anchor_dist
-        anchor_normalized = self._zoom_anchor_dist / scale
-        normalized_delta = normalized - anchor_normalized
+        delta = pinch_dist - self._zoom_anchor_dist
 
-        absolute_step = self.config.zoom_step_distance
-        relative_step = self.config.zoom_step_ratio
-
-        if (
-            absolute_delta >= absolute_step
-            or normalized_delta >= relative_step
-        ) and self._can_fire(Gesture.ZOOM_IN, now):
-            self._mark_fired(Gesture.ZOOM_IN, now)
+        if delta >= self.config.zoom_step_distance and self._can_fire(now):
+            self._last_discrete_action = now
             self._zoom_anchor_dist = pinch_dist
             return GestureEvent(Gesture.ZOOM_IN, cursor)
-
-        if (
-            absolute_delta <= -absolute_step
-            or normalized_delta <= -relative_step
-        ) and self._can_fire(Gesture.ZOOM_OUT, now):
-            self._mark_fired(Gesture.ZOOM_OUT, now)
+        elif delta <= -self.config.zoom_step_distance and self._can_fire(now):
+            self._last_discrete_action = now
             self._zoom_anchor_dist = pinch_dist
             return GestureEvent(Gesture.ZOOM_OUT, cursor)
 
         return None
 
-    def _check_scroll(self, index: Point) -> GestureEvent | None:
-        """Scroll vertical apenas quando o movimento é puramente vertical."""
+    def _check_scroll(self, index: Point, now: float) -> GestureEvent | None:
+        """Gera passos de scroll somente após deslocamento vertical consistente."""
         if self._previous_filtered_index is None:
+            return None
+
+        # Depois de um passo, aguarda alguns frames para que a mesma oscilação
+        # não role a página várias vezes seguidas.
+        if now - self._last_scroll_time < self.config.scroll_cooldown_seconds:
             return None
 
         dx = index.x - self._previous_filtered_index.x
         dy = index.y - self._previous_filtered_index.y
 
-        if abs(dx) > abs(dy) * 0.7:
+        if abs(dy) < 0.004 or abs(dx) > abs(dy) * 0.55:
             self._scroll_accumulator = 0.0
             return None
 
@@ -771,15 +753,22 @@ class HandGestureRecognizer:
 
         if self._scroll_accumulator <= -self.config.scroll_threshold:
             self._scroll_accumulator = 0.0
-            return GestureEvent(Gesture.SCROLL, index, amount=5)
+            self._last_scroll_time = now
+            return GestureEvent(Gesture.SCROLL, index, amount=1)
         elif self._scroll_accumulator >= self.config.scroll_threshold:
             self._scroll_accumulator = 0.0
-            return GestureEvent(Gesture.SCROLL, index, amount=-5)
+            self._last_scroll_time = now
+            return GestureEvent(Gesture.SCROLL, index, amount=-1)
 
         return None
 
     def _check_dwell(self, index: Point, now: float) -> tuple[GestureEvent | None, float]:
-        """Detecta parada do cursor dentro de uma bolha de estabilidade."""
+        """Lógica antiga de dwell, mantida para possível reativação futura.
+
+        Atualmente ela não participa da troca para o modo laranja: a troca é
+        imediata ao levantar indicador e médio. O método permanece isolado para
+        podermos restaurar o atraso sem reescrever o reconhecedor.
+        """
         if self._dwell_anchor is None:
             self._dwell_anchor = index
             self._dwell_start_time = now
@@ -794,7 +783,10 @@ class HandGestureRecognizer:
             self._dwell_fired = False
             return None, 0.0
 
-        elapsed = now - (self._dwell_start_time or now)
+        # Não use `or` aqui: timestamp 0.0 é válido nos testes e em relógios
+        # simulados. Caso contrário a bolinha nunca completa no primeiro ciclo.
+        start_time = self._dwell_start_time if self._dwell_start_time is not None else now
+        elapsed = now - start_time
         progress = min(1.0, elapsed / self.config.dwell_seconds)
 
         if progress >= 1.0 and not self._dwell_fired:
@@ -803,67 +795,50 @@ class HandGestureRecognizer:
 
         return None, progress if not self._dwell_fired else 1.0
 
+    def _check_air_click(self, index: Point, now: float) -> GestureEvent | None:
+        """Reconhece um toque curto do indicador no ar, no modo mouse."""
+        previous = self._air_click_previous_raw
+        self._air_click_previous_raw = index
+        if now < self._air_click_cooldown_until:
+            return None
+
+        # A primeira metade do gesto é um pequeno movimento para baixo.
+        if self._air_click_start is None:
+            if previous is not None and index.y - previous.y >= self.config.air_click_threshold:
+                self._air_click_start = previous
+                self._air_click_started_at = now
+            return None
+
+        start = self._air_click_start
+        started_at = self._air_click_started_at if self._air_click_started_at is not None else now
+        if now - started_at > self.config.air_click_window_seconds:
+            self._air_click_start = None
+            self._air_click_started_at = None
+            return None
+
+        # O retorno próximo ao ponto inicial completa o clique.
+        if index.y <= start.y + self.config.air_click_threshold * 0.35:
+            self._air_click_start = None
+            self._air_click_started_at = None
+            self._air_click_cooldown_until = now + self.config.air_click_cooldown_seconds
+            return GestureEvent(Gesture.DWELL_CLICK, index, cursor_enabled=False, gesture_mode=False)
+        return None
+
     def _is_finger_extended(
         self, landmarks: Sequence[object], tip_idx: int, pip_idx: int, mcp_idx: int
     ) -> bool:
-        """Classifica extensão usando ângulo articular + distância normalizada."""
+        """Verifica se um dedo está estendido."""
         wrist = self._point(landmarks[WRIST])
         tip = self._point(landmarks[tip_idx])
         pip = self._point(landmarks[pip_idx])
         mcp = self._point(landmarks[mcp_idx])
 
-        angle = self._joint_angle(mcp, pip, tip)
-        tip_wrist = self._distance_3d(tip, wrist)
-        pip_wrist = self._distance_3d(pip, wrist)
+        dist_tip_wrist = self._distance(tip, wrist)
+        dist_pip_wrist = self._distance(pip, wrist)
+        dist_tip_mcp = self._distance(tip, mcp)
+        dist_pip_mcp = self._distance(pip, mcp)
 
-        return (
-            angle >= self.config.finger_extension_angle
-            and tip_wrist >= pip_wrist * self.config.finger_extension_ratio
-        )
-
-    def _hand_scale(self, landmarks: Sequence[object]) -> float:
-        """Escala aproximada da palma, independente da distância à câmera."""
-        wrist = self._point(landmarks[WRIST])
-        middle_mcp = self._point(landmarks[MIDDLE_MCP])
-        index_mcp = self._point(landmarks[INDEX_MCP])
-        pinky_mcp = self._point(landmarks[PINKY_MCP])
-        return max(
-            self._distance_3d(wrist, middle_mcp),
-            self._distance_3d(index_mcp, pinky_mcp),
-            1e-4,
-        )
-
-    def _effective_pinch_start(self, landmarks: Sequence[object]) -> float:
-        scale = self._hand_scale(landmarks)
-        return min(self.config.pinch_distance_start, scale * self.config.pinch_ratio_start)
-
-    def _effective_pinch_release(self, landmarks: Sequence[object]) -> float:
-        scale = self._hand_scale(landmarks)
-        return min(self.config.pinch_distance_release, scale * self.config.pinch_ratio_release)
-
-    def _effective_zoom_max(self, landmarks: Sequence[object]) -> float:
-        scale = self._hand_scale(landmarks)
-        return min(self.config.max_zoom_interaction_dist, scale * self.config.max_zoom_ratio)
-
-    @staticmethod
-    def _joint_angle(first: Point, vertex: Point, last: Point) -> float:
-        a = (first.x - vertex.x, first.y - vertex.y, first.z - vertex.z)
-        b = (last.x - vertex.x, last.y - vertex.y, last.z - vertex.z)
-        norm_a = math.sqrt(sum(value * value for value in a))
-        norm_b = math.sqrt(sum(value * value for value in b))
-        if norm_a <= 1e-6 or norm_b <= 1e-6:
-            return 0.0
-        cosine = sum(x * y for x, y in zip(a, b)) / (norm_a * norm_b)
-        cosine = max(-1.0, min(1.0, cosine))
-        return math.degrees(math.acos(cosine))
-
-    @staticmethod
-    def _distance_3d(first: Point, second: Point) -> float:
-        return math.sqrt(
-            (first.x - second.x) ** 2
-            + (first.y - second.y) ** 2
-            + (first.z - second.z) ** 2
-        )
+        return (dist_tip_wrist > dist_pip_wrist * 1.01) and (dist_tip_mcp > dist_pip_mcp * 0.98)
 
     def _remember(self, index: Point) -> None:
         self._previous_filtered_index = index
@@ -881,8 +856,14 @@ class HandGestureRecognizer:
         self._is_pinching = False
         self._reset_dwell()
         self._scroll_accumulator = 0.0
+        self._last_scroll_time = -999.0
         self._zoom_anchor_dist = None
-        self._zoom_active = False
+        self._two_hand_zoom_active = False
+        self._gesture_mode = False
+        self._air_click_start = None
+        self._air_click_started_at = None
+        self._air_click_cooldown_until = -999.0
+        self._air_click_previous_raw = None
         self._previous_filtered_index = None
         self._palm_history.clear()
         self._two_hand_history.clear()
@@ -892,7 +873,7 @@ class HandGestureRecognizer:
         self._thumbs_up_counter = 0
         self._ok_fired = False
         self._thumbs_up_fired = False
-        self._last_action_times.clear()
+        self._last_discrete_action = -999.0
         self._last_swipe_time = -999.0
         self._last_swipe_gesture = None
         self._swipe_opposite_lockout_until = -999.0
@@ -900,20 +881,16 @@ class HandGestureRecognizer:
         self._last_minimize_time = -999.0
         self._vertical_opposite_lockout_until = -999.0
         self._last_click_time = None
-        self._typing_start_time = None
         self._typing_fired = False
-        self._pinch_candidate_since = None
-        self._pinch_stable_frames = 0
+        self._typing_motion_history.clear()
+        self._typing_last_finger_y = None
         self._fist_start_time = None
         self._fist_fired = False
         self._calibration_count = 0
         self._calibrated = was_calibrated or self.config.calibration_frames <= 0
 
-    def _can_fire(self, gesture: Gesture, now: float) -> bool:
-        return now - self._last_action_times.get(gesture, -999.0) >= self.config.cooldown_seconds
-
-    def _mark_fired(self, gesture: Gesture, now: float) -> None:
-        self._last_action_times[gesture] = now
+    def _can_fire(self, now: float) -> bool:
+        return now - self._last_discrete_action >= self.config.cooldown_seconds
 
     @staticmethod
     def _point(landmark: object) -> Point:

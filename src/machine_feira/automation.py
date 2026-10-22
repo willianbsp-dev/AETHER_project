@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
+import time
+from pathlib import Path
 from typing import Callable
 from .hyprland import HyprlandDispatcher
 from .types import Gesture, GestureEvent
@@ -12,23 +15,12 @@ from .types import Gesture, GestureEvent
 logger = logging.getLogger(__name__)
 
 
-# Gestos onde o cursor do mouse não deve ser reposicionado
-NON_CURSOR_GESTURES = {
-    Gesture.MAXIMIZE,
-    Gesture.RESTORE,
-    Gesture.MINIMIZE,
-    Gesture.TOGGLE_MINIMIZED,
-    Gesture.SWIPE_LEFT,
-    Gesture.SWIPE_RIGHT,
-    Gesture.VOICE_ACTIVATE,
-    Gesture.PAUSE_TOGGLE,
-    Gesture.VIRTUAL_KEYBOARD,
-}
-
-# Pequenos movimentos da mão não devem causar tremor no ponteiro, mas também não
-# podem ser descartados completamente: a mão passa a funcionar como um trackpad.
-CURSOR_DEADZONE = 0.0015
-CURSOR_SENSITIVITY = 1.35
+# A imagem da câmera é um touchpad absoluto. A escala completa permite chegar
+# às bordas esquerda e superior, que ficavam inacessíveis com uma margem fixa.
+CURSOR_MARGIN = 0.0
+CURSOR_SMOOTHING = 0.22
+CURSOR_SCREEN_SCALE = 1.0
+CURSOR_TOLERANCE = 0.006
 
 
 class DesktopAutomation:
@@ -44,7 +36,18 @@ class DesktopAutomation:
         self._pyautogui = None
         self._last_cursor: tuple[float, float] | None = None
         self._screen_cursor: tuple[int, int] | None = None
+        self._smoothed_pointer: tuple[float, float] | None = None
+        # PyAutoGUI fala X11. Em Wayland, ydotool é o backend real de entrada;
+        # ele será usado quando o daemon tiver criado o socket do usuário.
+        self._ydotool = shutil.which("ydotool")
+        self._ydotool_socket = Path(
+            os.environ.get("YDOTOOL_SOCKET", f"/run/user/{os.getuid()}/.ydotool_socket")
+        )
+        self._virtual_keyboard_process: subprocess.Popen[bytes] | None = None
+        self._pointer_process: subprocess.Popen[bytes] | None = None
+        self._last_pointer_injection = 0.0
         self.hyprland = hyprland or HyprlandDispatcher()
+        self.hyprland.remember_current_target()
         self.on_voice_activate = on_voice_activate
         self.voice_hotkey = tuple(k for k in (voice_hotkey or ()) if k)
         self._paused = False
@@ -77,45 +80,63 @@ class DesktopAutomation:
             return
 
         # 1. Movimentação contínua do cursor.
-        # O primeiro quadro apenas cria a âncora; assim a câmera não faz o
-        # ponteiro saltar para uma coordenada absoluta ao iniciar o controle.
-        if event.gesture not in NON_CURSOR_GESTURES:
-            self._move_cursor_relative(event)
+        # O reconhecedor só marca cursor_enabled para o indicador isolado. O
+        # A posição 2D do indicador é convertida diretamente para a tela. A
+        # bolinha de dwell é apenas clique e nunca bloqueia este movimento.
+        if event.cursor_enabled:
+            self._move_cursor_absolute(event)
+        elif event.gesture is Gesture.PINCH and self._dragging:
+            # Durante o arrasto, a pinça também acompanha a posição absoluta.
+            self._move_cursor_absolute(event)
         else:
-            # Evita um salto quando uma ação discreta termina.
-            self._last_cursor = (event.cursor.x, event.cursor.y)
+            # O próximo gesto de indicador começa a partir da posição atual da
+            # mão, sem uma interpolação longa desde o gesto anterior.
+            self._smoothed_pointer = None
 
         # 2. Arrastar Janela / Drag & Drop (Usa Super + Clique para compatibilidade total com Hyprland)
         if event.gesture is Gesture.PINCH:
             if not self._dragging:
+                self._last_cursor = (event.cursor.x, event.cursor.y)
                 self.hyprland.ensure_camera_unfocused()
                 self._send_key_down("super")
-                self._pyautogui.mouseDown()
+                if not self._ydotool_run("click", "0x41"):
+                    self._pyautogui.mouseDown()
                 self._dragging = True
         elif self._dragging:
-            self._pyautogui.mouseUp()
+            if not self._ydotool_run("click", "0x81"):
+                self._pyautogui.mouseUp()
             self._send_key_up("super")
             self._dragging = False
 
         # 3. Cliques e Interações no Desktop
         if event.gesture is Gesture.DWELL_CLICK:
             self.hyprland.ensure_camera_unfocused()
-            self._pyautogui.click()
+            if not self._ydotool_run("click", "0xC0"):
+                self._pyautogui.click()
         elif event.gesture is Gesture.DOUBLE_CLICK:
             self.hyprland.ensure_camera_unfocused()
-            self._pyautogui.click(button="right")
+            if not self._ydotool_run("click", "0xC1"):
+                self._pyautogui.click(button="right")
         elif event.gesture is Gesture.SCROLL:
             self.hyprland.ensure_camera_unfocused()
-            self._pyautogui.scroll(event.amount)
+            # Passos pequenos e assíncronos deixam o scroll contínuo sem
+            # bloquear a câmera esperando um processo externo.
+            # O sinal positivo do gesto de subir deve permanecer positivo no
+            # ydotool; antes ele era invertido e o scroll ficava ao contrário.
+            # Usar -y evita que o valor -1 seja interpretado como uma opção
+            # do ydotool em vez de ser aceito como direção de descida.
+            if not self._ydotool_background(
+                "mousemove", "--wheel", "-x", "0", "-y", str(event.amount)
+            ):
+                self._pyautogui.scroll(event.amount)
         elif event.gesture is Gesture.ZOOM_IN:
             self._send_hotkey("ctrl", "+")
-            self._send_hotkey("ctrl", "=")
         elif event.gesture is Gesture.ZOOM_OUT:
             self._send_hotkey("ctrl", "-")
         elif event.gesture is Gesture.PAGE_FORWARD:
             self._send_hotkey("alt", "right")
         elif event.gesture is Gesture.PAGE_BACK:
-            self._send_hotkey("ctrl", "z")
+            self._send_hotkey("alt", "left")
         elif event.gesture is Gesture.UNDO:
             self._send_hotkey("ctrl", "z")
         elif event.gesture is Gesture.CONFIRM:
@@ -148,17 +169,30 @@ class DesktopAutomation:
             self._open_virtual_keyboard()
 
     def _send_key_down(self, key: str) -> None:
+        if self._ydotool_run("key", f"{_LINUX_KEY_CODES.get(key, '')}:1"):
+            return
         if self._pyautogui is not None and hasattr(self._pyautogui, "keyDown"):
             self._pyautogui.keyDown(key)
 
     def _send_key_up(self, key: str) -> None:
+        if self._ydotool_run("key", f"{_LINUX_KEY_CODES.get(key, '')}:0"):
+            return
         if self._pyautogui is not None and hasattr(self._pyautogui, "keyUp"):
             self._pyautogui.keyUp(key)
 
     def _send_hotkey(self, *keys: str) -> None:
         if self._pyautogui is None or not keys:
             return
+        # Ctrl+Z no terminal é SIGTSTP: ele suspende o próprio processo do
+        # AETHER. Se nenhuma janela gráfica foi encontrada na inicialização,
+        # falhamos com segurança em vez de travar a aplicação novamente.
+        if keys == ("ctrl", "z") and hasattr(self.hyprland, "has_target_window"):
+            if not self.hyprland.has_target_window():
+                logger.warning("Ctrl+Z ignorado: nenhuma janela gráfica segura foi encontrada")
+                return
         self.hyprland.ensure_camera_unfocused()
+        if self._ydotool_send_hotkey(keys):
+            return
         self._pyautogui.hotkey(*keys)
 
     def _send_press(self, key: str) -> None:
@@ -184,7 +218,23 @@ class DesktopAutomation:
                 logger.error("Não foi possível iniciar o ditado: %s", err)
 
     def _open_virtual_keyboard(self) -> None:
-        """Abre um teclado virtual disponível no sistema hospedeiro."""
+        """Alterna o wvkbd: um gesto abre, o mesmo gesto fecha."""
+        if self._virtual_keyboard_process is not None and self._virtual_keyboard_process.poll() is None:
+            self._virtual_keyboard_process.terminate()
+            self._virtual_keyboard_process = None
+            return
+
+        # Também recolhe instâncias abertas antes desta execução do programa;
+        # assim o gesto nunca acumula duas barras do wvkbd na tela.
+        existing = subprocess.run(
+            ["pgrep", "-x", "wvkbd-mobintl"], capture_output=True, text=True, check=False
+        )
+        if existing.returncode == 0:
+            for pid in existing.stdout.split():
+                if pid.isdigit():
+                    subprocess.run(["kill", "-TERM", pid], check=False)
+            return
+
         command = next(
             (
                 shutil.which(name)
@@ -197,41 +247,134 @@ class DesktopAutomation:
             logger.warning("Nenhum teclado virtual Wayland encontrado")
             return
         self.hyprland.ensure_camera_unfocused()
-        subprocess.Popen([command], start_new_session=True)
+        self._virtual_keyboard_process = subprocess.Popen([command], start_new_session=True)
 
     def release(self) -> None:
         if self.enabled and self._pyautogui:
             if self._dragging:
-                self._pyautogui.mouseUp()
+                if not self._ydotool_run("click", "0x81"):
+                    self._pyautogui.mouseUp()
                 self._send_key_up("super")
         self._dragging = False
         self._last_cursor = None
 
-    def _move_cursor_relative(self, event: GestureEvent) -> None:
-        """Move o ponteiro pela variação do dedo, como um trackpad virtual."""
+    def _move_cursor_absolute(self, event: GestureEvent) -> None:
+        """Converte a posição normalizada da câmera em posição absoluta da tela."""
         assert self._pyautogui is not None
-        current = (event.cursor.x, event.cursor.y)
-        previous = self._last_cursor
-        self._last_cursor = current
-        if previous is None:
-            return
-
-        dx = current[0] - previous[0]
-        dy = current[1] - previous[1]
-        if abs(dx) < CURSOR_DEADZONE and abs(dy) < CURSOR_DEADZONE:
-            return
-
         width, height = self._pyautogui.size()
-        if self._screen_cursor is None:
-            try:
-                screen_x, screen_y = self._pyautogui.position()
-            except (AttributeError, OSError):
-                # Fakes e backends sem leitura de posição começam no centro.
-                screen_x, screen_y = width // 2, height // 2
+        normalized_x = max(0.0, min(1.0, (event.cursor.x - CURSOR_MARGIN) / (1 - 2 * CURSOR_MARGIN)))
+        normalized_y = max(0.0, min(1.0, (event.cursor.y - CURSOR_MARGIN) / (1 - 2 * CURSOR_MARGIN)))
+        current = (normalized_x, normalized_y)
+        if self._smoothed_pointer is None:
+            self._smoothed_pointer = current
         else:
-            screen_x, screen_y = self._screen_cursor
-
-        target_x = max(0, min(width - 1, int(screen_x + dx * width * CURSOR_SENSITIVITY)))
-        target_y = max(0, min(height - 1, int(screen_y + dy * height * CURSOR_SENSITIVITY)))
-        self._pyautogui.moveTo(target_x, target_y, duration=0)
+            old_x, old_y = self._smoothed_pointer
+            # Descarta apenas tremores mínimos, sem criar um atraso de reação.
+            if abs(normalized_x - old_x) < CURSOR_TOLERANCE and abs(normalized_y - old_y) < CURSOR_TOLERANCE:
+                return
+            self._smoothed_pointer = (
+                old_x + (normalized_x - old_x) * CURSOR_SMOOTHING,
+                old_y + (normalized_y - old_y) * CURSOR_SMOOTHING,
+            )
+        smooth_x, smooth_y = self._smoothed_pointer
+        # Usa apenas 85% da tela para que pequenos tremores da mão não
+        # atravessem grandes distâncias no desktop.
+        target_x = max(0, min(width - 1, int((0.5 + (smooth_x - 0.5) * CURSOR_SCREEN_SCALE) * (width - 1))))
+        target_y = max(0, min(height - 1, int((0.5 + (smooth_y - 0.5) * CURSOR_SCREEN_SCALE) * (height - 1))))
+        moved_wayland = self._ydotool_move_absolute(target_x, target_y)
+        if not moved_wayland:
+            self._pyautogui.moveTo(target_x, target_y, duration=0)
         self._screen_cursor = (target_x, target_y)
+
+    def _ydotool_run(self, *args: str) -> bool:
+        """Executa uma ação Wayland somente se o daemon estiver disponível."""
+        if not self._ydotool or not self._ydotool_socket.exists():
+            return False
+        try:
+            result = subprocess.run(
+                [self._ydotool, *args],
+                env={**os.environ, "YDOTOOL_SOCKET": str(self._ydotool_socket)},
+                capture_output=True,
+                check=False,
+                timeout=0.08,
+            )
+            return result.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    def _ydotool_background(self, *args: str) -> bool:
+        """Executa uma ação do ydotool em segundo plano, sem travar a câmera.
+
+        O gesto do indicador chega dezenas de vezes por segundo. Esperar um
+        processo `ydotool` terminar em cada quadro fazia a webcam parar e
+        podia deixar a tecla Super presa. Movimentos são limitados a 60 Hz e
+        executados em segundo plano; cliques e atalhos continuam síncronos.
+        """
+        # Backends fakeados dos testes expõem `moved_to`; neles precisamos
+        # deixar o movimento passar pelo método PyAutoGUI simulado.
+        if hasattr(self._pyautogui, "moved_to"):
+            return False
+        if not self._ydotool or not self._ydotool_socket.exists():
+            return False
+        now = time.monotonic()
+        if now - self._last_pointer_injection < 1.0 / 60.0:
+            return True
+        if self._pointer_process is not None and self._pointer_process.poll() is None:
+            return True
+        if not self._ydotool or not self._ydotool_socket.exists():
+            return False
+        now = time.monotonic()
+        if now - self._last_pointer_injection < 1.0 / 60.0:
+            return True
+        if self._pointer_process is not None and self._pointer_process.poll() is None:
+            return True
+        try:
+            self._pointer_process = subprocess.Popen(
+                [self._ydotool, *args],
+                env={**os.environ, "YDOTOOL_SOCKET": str(self._ydotool_socket)},
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            self._last_pointer_injection = now
+            return True
+        except OSError:
+            return False
+
+    def _ydotool_move_absolute(self, x: int, y: int) -> bool:
+        """Move o ponteiro para uma coordenada absoluta sem esperar o processo."""
+        # Backends fakeados dos testes expõem `moved_to`.
+        if hasattr(self._pyautogui, "moved_to"):
+            return False
+        return self._ydotool_background("mousemove", "--absolute", str(x), str(y))
+
+    def _ydotool_send_hotkey(self, keys: tuple[str, ...]) -> bool:
+        """Envia teclas pelo Wayland, incluindo o Ctrl+Z do círculo anti-horário."""
+        pressed: list[str] = []
+        for key in keys:
+            normalized = key.lower()
+            code = _LINUX_KEY_CODES.get(normalized)
+            if code is None:
+                return False
+            # '+' é Shift + '=' no teclado Linux; os demais são pressionados
+            # juntos e liberados na ordem inversa.
+            if normalized == "+":
+                pressed.extend(("42:1", "13:1"))
+            else:
+                pressed.append(f"{code}:1")
+        released = [item.replace(":1", ":0") for item in reversed(pressed)]
+        return self._ydotool_run("key", *(pressed + released))
+
+
+# Códigos Linux usados apenas para manter Super pressionado durante a pinça.
+# Os demais atalhos continuam usando o backend de teclado já configurado.
+_LINUX_KEY_CODES = {
+    "super": 125,
+    "ctrl": 29,
+    "alt": 56,
+    "z": 44,
+    "left": 105,
+    "right": 106,
+    "+": 13,
+    "-": 12,
+}

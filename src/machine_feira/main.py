@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+
+# O opencv-python não inclui o plugin Qt Wayland nesta instalação. XWayland é
+# compatível com o Hyprland e permite que a janela da câmera abra normalmente.
+os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 import cv2
 import mediapipe as mp
@@ -188,9 +193,10 @@ def _draw_feedback(frame: object, event: GestureEvent) -> None:
             thickness = max(1, int(3 * alpha))
             cv2.line(frame, pt1, pt2, (255, 80, 255), thickness)
 
-    # 2. Cursor indicador
-    cv2.circle(frame, (cx, cy), 6, (0, 255, 255), 2)
-    cv2.circle(frame, (cx, cy), 2, (0, 0, 255), -1)
+    # 2. Cursor indicador: azul = modo mouse; laranja = modo gesto liberado.
+    mode_color = (255, 200, 0) if not event.gesture_mode else (0, 165, 255)
+    cv2.circle(frame, (cx, cy), 6, mode_color, 2)
+    cv2.circle(frame, (cx, cy), 2, mode_color, -1)
 
     # 3. Indicador de progresso do Dwell Click
     if event.dwell_progress > 0:
@@ -199,7 +205,7 @@ def _draw_feedback(frame: object, event: GestureEvent) -> None:
         cv2.circle(frame, (cx, cy), radius, (100, 100, 100), 1)
         # Arco de progresso preenchendo
         angle = int(event.dwell_progress * 360)
-        prog_color = (0, 255, 0) if event.dwell_progress >= 1.0 else (0, 200, 255)
+        prog_color = (0, 165, 255) if event.gesture_mode else (255, 200, 0)
         cv2.ellipse(frame, (cx, cy), (radius, radius), -90, 0, angle, prog_color, 3)
 
 
