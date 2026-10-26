@@ -1,6 +1,6 @@
 # Feira Tecnológica - Projeto AETHER
 
-![texto](assets/img/banner_AETHER.jpeg)
+![banner](assets/img/banner_AETHER.jpeg)
 
 Sistema de controle de computador por gestos aéreos em tempo real, utilizando webcam, MediaPipe Tasks, PyAutoGUI, integrado à aplicação Mobile desenvolvida com Flutter e inteligência artificial.
 
@@ -16,6 +16,12 @@ Sistema de controle de computador por gestos aéreos em tempo real, utilizando w
 - Aluno 3 (Maria Rita Barbosa Lima Albuquerque dos Santos / 25021)
 - Aluno 4 (Mayara Teles / 25122)
 - Aluno 5 (Willian Bernardo Soares Pereira / 25018)
+
+---
+
+## Esboço do stand do projeto
+
+![esboço](assets/img/EsbocoStand.jpeg)
 
 ---
 
