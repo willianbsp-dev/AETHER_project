@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Mapa de nomes amigáveis para exibição na interface
 GESTURE_LABELS: dict[Gesture, str] = {
     Gesture.NONE: "Navegando",
-    Gesture.PINCH: "Mover Janela (Pinça)",
+    Gesture.PINCH: "Arrastar (topo: mover janela)",
     Gesture.MAXIMIZE: "Maximizar (2 Mãos)",
     Gesture.RESTORE: "Restaurar (compatibilidade)",
     Gesture.MINIMIZE: "Minimizar (Palma p/ Baixo)",

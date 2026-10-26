@@ -228,7 +228,7 @@ class HyprlandDispatcher:
                 if address and client.get("mapped", True) and not self._looks_like_terminal(client):
                     self._target_window_address = str(address)
                     return
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
             return
 
     def has_target_window(self) -> bool:

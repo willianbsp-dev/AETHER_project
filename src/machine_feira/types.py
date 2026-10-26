@@ -8,7 +8,7 @@ from enum import Enum, auto
 
 class Gesture(Enum):
     NONE = auto()
-    PINCH = auto()          # Mover Janela / Arrastar
+    PINCH = auto()          # Arrastar conteúdo; topo da tela move janela
     MAXIMIZE = auto()       # Maximizar (2 braços/mãos para os lados)
     RESTORE = auto()        # Restaurar/Flutuante (2 braços/mãos ao centro)
     MINIMIZE = auto()       # Minimizar (Palma aberta para baixo)

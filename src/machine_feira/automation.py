@@ -21,6 +21,9 @@ CURSOR_MARGIN = 0.0
 CURSOR_SMOOTHING = 0.22
 CURSOR_SCREEN_SCALE = 1.0
 CURSOR_TOLERANCE = 0.006
+# A pinça iniciada nos 18% superiores da imagem representa a barra de título;
+# em qualquer outra área ela funciona como arrasto normal de conteúdo.
+WINDOW_DRAG_BAND = 0.18
 
 
 class DesktopAutomation:
@@ -33,6 +36,7 @@ class DesktopAutomation:
     ) -> None:
         self.enabled = enabled
         self._dragging = False
+        self._window_dragging = False
         self._pyautogui = None
         self._last_cursor: tuple[float, float] | None = None
         self._screen_cursor: tuple[int, int] | None = None
@@ -93,20 +97,28 @@ class DesktopAutomation:
             # mão, sem uma interpolação longa desde o gesto anterior.
             self._smoothed_pointer = None
 
-        # 2. Arrastar Janela / Drag & Drop (Usa Super + Clique para compatibilidade total com Hyprland)
+        # 2. Pinça: arrasto de conteúdo ou movimento de janela.
         if event.gesture is Gesture.PINCH:
             if not self._dragging:
-                self._last_cursor = (event.cursor.x, event.cursor.y)
                 self.hyprland.ensure_camera_unfocused()
-                self._send_key_down("super")
-                if not self._ydotool_run("click", "0x41"):
+                # O mesmo gesto ganha dois significados pelo ponto inicial:
+                # faixa superior = janela; restante = elemento/site.
+                self._window_dragging = event.cursor.y <= WINDOW_DRAG_BAND
+                if self._window_dragging:
+                    self._send_key_down("super")
+                # 0x40 = botão esquerdo pressionado. 0x41 seria o direito e
+                # acionaria o resize do Hyprland com Super.
+                if not self._ydotool_run("click", "0x40"):
                     self._pyautogui.mouseDown()
                 self._dragging = True
         elif self._dragging:
-            if not self._ydotool_run("click", "0x81"):
+            # 0x80 = liberação do botão esquerdo.
+            if not self._ydotool_run("click", "0x80"):
                 self._pyautogui.mouseUp()
-            self._send_key_up("super")
+            if self._window_dragging:
+                self._send_key_up("super")
             self._dragging = False
+            self._window_dragging = False
 
         # 3. Cliques e Interações no Desktop
         if event.gesture is Gesture.DWELL_CLICK:
@@ -252,10 +264,11 @@ class DesktopAutomation:
     def release(self) -> None:
         if self.enabled and self._pyautogui:
             if self._dragging:
-                if not self._ydotool_run("click", "0x81"):
+                if not self._ydotool_run("click", "0x80"):
                     self._pyautogui.mouseUp()
                 self._send_key_up("super")
         self._dragging = False
+        self._window_dragging = False
         self._last_cursor = None
 
     def _move_cursor_absolute(self, event: GestureEvent) -> None:

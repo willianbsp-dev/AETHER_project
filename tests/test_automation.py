@@ -54,6 +54,16 @@ class _FakePyAutoGUI:
         self.pressed.append(f"up_{key}")
 
 
+def test_ydotool_drag_uses_left_button_codes() -> None:
+    automation, _, _ = _setup_automation()
+    calls: list[tuple[str, ...]] = []
+    automation._ydotool_run = lambda *args: calls.append(args) or True  # type: ignore[method-assign]
+    automation.handle(GestureEvent(Gesture.PINCH, Point(0.5, 0.5)))
+    automation.handle(GestureEvent(Gesture.NONE, Point(0.5, 0.5)))
+    assert ("click", "0x40") in calls
+    assert ("click", "0x80") in calls
+
+
 class _FakeHyprland(HyprlandDispatcher):
     def __init__(self, available: bool = True) -> None:
         super().__init__()
@@ -115,6 +125,24 @@ def test_drag_and_release() -> None:
     automation.handle(GestureEvent(Gesture.NONE, Point(0.4, 0.4)))
     assert fake_gui.mouse_up_called
     assert not automation._dragging
+
+
+def test_pinch_in_content_drags_without_super() -> None:
+    automation, fake_gui, _ = _setup_automation()
+    automation.handle(GestureEvent(Gesture.PINCH, Point(0.5, 0.5)))
+    assert automation._dragging
+    assert "down_super" not in fake_gui.pressed
+    automation.handle(GestureEvent(Gesture.NONE, Point(0.5, 0.5)))
+    assert fake_gui.mouse_up_called
+
+
+def test_pinch_in_top_band_moves_window_with_super() -> None:
+    automation, fake_gui, _ = _setup_automation()
+    automation.handle(GestureEvent(Gesture.PINCH, Point(0.5, 0.10)))
+    assert automation._dragging
+    assert "down_super" in fake_gui.pressed
+    automation.handle(GestureEvent(Gesture.NONE, Point(0.5, 0.10)))
+    assert "up_super" in fake_gui.pressed
 
 
 def test_only_index_enabled_event_moves_cursor() -> None:
